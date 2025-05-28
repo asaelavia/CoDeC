@@ -1,0 +1,2 @@
+¬{ t0.education_num <= 13 ∧ t0.occupation == "Prof_specialty"}
+¬{ t0.education == t1.education ∧ t0.education_num != t1.education_num }
