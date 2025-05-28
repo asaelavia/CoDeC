@@ -995,7 +995,7 @@ class CounterfactualGUI:
     def browse_dataset(self):
         filename = filedialog.askopenfilename(
             title="Select Dataset CSV",
-            initialdir="D:/Demo/",
+            initialdir="./",
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*"))
         )
         if filename:
@@ -1005,7 +1005,7 @@ class CounterfactualGUI:
     def browse_constraints(self):
         filename = filedialog.askopenfilename(
             title="Select Constraints File",
-            initialdir="D:/Thesis/Cfs/data/Demo/",
+            initialdir="./",
             filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
         )
         if filename:
