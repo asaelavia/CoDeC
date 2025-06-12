@@ -11,7 +11,8 @@ import torch
 from dice_ml import diverse_counterfactuals as exp
 from dice_ml.explainer_interfaces.explainer_base import ExplainerBase
 
-
+random.seed(0)
+np.random.seed(0)
 class DicePyTorch(ExplainerBase):
 
     def __init__(self, data_interface, model_interface):

@@ -229,8 +229,8 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
                                                                       desired_class=1,
                                                                       verbose=True,
                                                                       learning_rate=6e-2,
-                                                                      max_iter=400,
-                                                                      # max_iter=1500,
+                                                                      min_iter = 10,
+                                                                      max_iter=30,
                                                                       features_to_vary=features_to_vary)
             except:
                 break
@@ -462,7 +462,9 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
                                                           verbose=True,
                                                           features_to_vary=features_to_vary,
                                                           # max_iter=1500,
-                                                          max_iter=200,
+                                                          min_iter=10,
+                                                          max_iter=50,
+                                                          limit_steps_ls=150,
                                                           learning_rate=6e-2
                                                           )
     dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.to_csv('dice_gui.csv')
@@ -651,9 +653,9 @@ class CounterfactualGUI:
             # Do the actual computation
             try:
                 # Try loading pre-generated results first
-                with open('dice_gui_metrics.pkl', 'rb') as f:
+                with open('dice_gui_metrics_aaaa.pkl', 'rb') as f:
                     dice_data = pickle.load(f)
-                with open('codec_gui_metrics.pkl', 'rb') as f:
+                with open('codec_gui_metrics_aaaa.pkl', 'rb') as f:
                     codec_data = pickle.load(f)
                 positive_samples, dpp, distances = codec_data
             except FileNotFoundError:
