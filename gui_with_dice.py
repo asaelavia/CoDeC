@@ -1,3 +1,4 @@
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -8,14 +9,808 @@ import pandas as pd
 import numpy as np
 import os
 import time
-import pickle
 import random
 import math
 from datetime import datetime
 import json
-from gui2 import code_counterfactuals_dice as code_counterfactuals
+from sklearn.model_selection import train_test_split
+import dice_ml
+from class_models import Mlp, pretrain
+from dice_ml.utils.helpers import DataTransfomer
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+import itertools
+import bisect
+from contextlib import contextmanager
+import numbers
+
+seed = 42
+random.seed(seed)
+np.random.seed(seed)
+
+def extract_names_and_conditions(line):
+    constraints = []
+    pattern = r'([\w.-]+)\s*([<>=!]=?)\s*([\w."]+)'
+    matches = re.findall(pattern, line.rstrip())
+    for match in matches:
+        lhs, op, rhs = match
+        constraints.append((lhs, op, rhs))
+    return constraints
+
+
+def load_constraints(path):
+    f = open(path, 'r')
+    constraints_txt = []
+    for line in f:
+        constraint = extract_names_and_conditions(line.rstrip())
+        if 't1.' in line:
+            if any(op in line for op in ['>=', '<=', '< ', '> ']):
+                rev_constraint = []
+                for pred in constraint:
+                    if 't0.' in pred[0]:
+                        rev_constraint.append((pred[0].replace('t0.', 't1.'), pred[1], (pred[2].replace('t1.', 't0.'))))
+                    else:
+                        rev_constraint.append((pred[0].replace('t1.', 't0.'), pred[1], (pred[2].replace('t1.', 't0.'))))
+                rev_constraint_fixed = []
+                for pred in rev_constraint:
+                    rev_constraint_fixed.append(
+                        f'{pred[0].replace("t0.", "cf_row.").replace("t1.", "df.")} {pred[1]} {pred[2].replace("t0.", "cf_row.").replace("t1.", "df.")}')
+                constraints_txt.append(rev_constraint_fixed)
+        constraint_fixed = []
+        for pred in constraint:
+            constraint_fixed.append(
+                f'{pred[0].replace("t0.", "cf_row.").replace("t1.", "df.")} {pred[1]} {pred[2].replace("t0.", "cf_row.").replace("t1.", "df.")}')
+        constraints_txt.append(constraint_fixed)
+
+    def cons_func(df, cf_row, cons_id, exclude=None):
+        if exclude is None:
+            exclude = []
+        df_mask = '('
+        for pred in constraints_txt[cons_id]:
+            if (pred.split('.')[1].split(' ')[0] in exclude) and ('cf_row' in pred):
+                continue
+            df_mask += f'({pred}) & '
+        if len(df_mask[:-1]) == 0:
+            if len(exclude) == 0:
+                return pd.Series([False] * len(df), index=df.index)
+            else:
+                return pd.Series([True] * len(df), index=df.index)
+        res = eval(df_mask[:-3] + ')')
+        if type(res) != bool:
+            return res
+        if not res:
+            return pd.Series([False] * len(df), index=df.index)
+        else:
+            return pd.Series([True] * len(df), index=df.index)
+
+    dic_cols = {}
+    unary_cons_lst = []
+    unary_cons_lst_single = []
+    bin_cons = []
+    cons_feat = [[] for _ in range(len(constraints_txt))]
+    for index, cons in enumerate(constraints_txt):
+        unary = True
+        for pred in cons:
+            col = pred.split('.')[1].split(' ')[0]
+            if index not in dic_cols.get(col, []):
+                dic_cols[col] = dic_cols.get(col, []) + [index]
+            cons_feat[index].append(col)
+            if unary:
+                if 'df.' in pred:
+                    unary = False
+        if unary:
+            if len(cons) == 1:
+                unary_cons_lst_single.append(index)
+            else:
+                unary_cons_lst.append(index)
+        else:
+            bin_cons.append(index)
+    f.close()
+    return constraints_txt, dic_cols, cons_func, cons_feat, unary_cons_lst, unary_cons_lst_single, bin_cons
+
+def dpp_style(cfs, dice_inst):
+    num_cfs = len(cfs)
+    """Computes the DPP of a matrix."""
+    det_entries = torch.ones((num_cfs, num_cfs))
+    for i in range(num_cfs):
+        for j in range(num_cfs):
+            det_entries[(i, j)] = 1.0 / (
+                    1.0 + compute_dist(torch.tensor(cfs.iloc[i].values.astype('float32')),
+                                       torch.tensor(cfs.iloc[j].values.astype('float32')),
+                                       dice_inst))
+            if i == j:
+                det_entries[(i, j)] += 0.0001
+    diversity_loss = torch.det(det_entries)
+    return diversity_loss
+
+
+def compute_dist(x1, x2, dice_inst):
+    return torch.sum(torch.mul((torch.abs(x1 - x2)), dice_inst.feature_weights_list), dim=0)
+
+
+def n_cfs_score(comb_cfs, origin_instance, transformer, exp_random):
+    dpp_score = dpp_style(transformer.transform(comb_cfs), exp_random).item()
+    prox_distances = []
+    for index, row in comb_cfs.iterrows():
+        proximity_dist = compute_dist(
+            torch.tensor(transformer.transform(origin_instance.to_frame().T).values.astype('float32')).flatten(),
+            torch.tensor(transformer.transform(row.to_frame().T).values.astype('float32')).flatten(), exp_random)
+        proximity_dist /= len(exp_random.minx[0])
+        prox_distances.append(proximity_dist)
+    proximity_distance = np.mean(prox_distances)
+    return dpp_score, proximity_distance
+
+
+def n_best_cfs_heuristic(cfs_pool, origin_instance, k, transformer, exp_random):
+    cfs_pool = cfs_pool.copy()
+    curr_best = cfs_pool[1:0]
+    comb = ()
+    dist_dic = {}
+    best_indices = []
+    for _ in range(min(len(cfs_pool),k)):
+        dic = {}
+        for i, cf in cfs_pool.iterrows():
+            dpp_score, proximity_distance = n_cfs_score(
+                pd.concat([curr_best, pd.DataFrame([cf])], axis=0, ignore_index=True), origin_instance, transformer,
+                exp_random)
+            if len(curr_best) == 0:
+                dist_dic[i] = proximity_distance
+            dic[i] = (dpp_score, proximity_distance, dpp_score - 0.5 * proximity_distance)
+        best_index = max(dic, key=lambda x: dic[x][-1])
+        best_cf = cfs_pool.loc[best_index]
+        cfs_pool = cfs_pool.drop(best_index, axis=0)
+        curr_best = pd.concat([curr_best, pd.DataFrame([best_cf])], axis=0)
+        best_indices.append(best_index)
+    return curr_best, dic[best_index][0], [dist_dic[i] for i in best_indices]
+
+timeout_occurred = False
+def timeout_handler():
+    global timeout_occurred
+    timeout_occurred = True
+
+
+def get_value_range_optimized(dataset, col, is_continuous):
+    """Optimized value range generation"""
+    if is_continuous:
+        min_val, max_val = dataset[col].min(), dataset[col].max()
+        if (max_val - min_val) > 100:
+            step = max(1, (max_val - min_val) // 100)
+            return list(range(int(min_val), int(max_val) + 1, step))
+        else:
+            return list(range(int(min_val), int(max_val) + 1))
+    else:
+        return list(dataset[col].unique())
+
+def single_pred_cons_optimized(val_iter, col, constraints, dic_cols, unary_cons_lst_single):
+    """Optimized single predicate constraints with exact original logic"""
+    if col not in dic_cols:
+        return val_iter
+
+    common_elements = set(unary_cons_lst_single) & set(dic_cols[col])
+
+    for cons in common_elements:
+        try:
+            _, op, constant_str = constraints[cons][0].split(' ')
+
+            if op == '>':
+                constant = float(constant_str)
+                # Use bisect logic like original
+                import bisect
+                ind = bisect.bisect_right(val_iter, constant)
+                val_iter = val_iter[:ind]
+            elif op == '>=':
+                constant = float(constant_str)
+                import bisect
+                ind = bisect.bisect_left(val_iter, constant)
+                val_iter = val_iter[:ind]
+            elif op == '<':
+                constant = float(constant_str)
+                import bisect
+                ind = bisect.bisect_left(val_iter, constant)
+                val_iter = val_iter[ind:]
+            elif op == '<=':
+                constant = float(constant_str)
+                import bisect
+                ind = bisect.bisect_right(val_iter, constant)
+                val_iter = val_iter[ind:]
+            elif op == '==':
+                if constant_str in val_iter:
+                    val_iter.remove(constant_str)
+            elif op == '!=':
+                if constant_str in val_iter:
+                    val_iter = [constant_str]
+        except (ValueError, IndexError):
+            continue
+
+    return val_iter
+
+def project_constraints_exact_fast(row, cf_example, fixed_feat, cont_feat, dic_cols, constraints, cons_function,
+                                   cons_feat, unary_cons_lst_single,bin_cons):
+    global timeout_occurred
+    # More efficient: use numeric hash instead of string operations
+    original_instance = cf_example.test_instance_df.iloc[0]
+
+    # Hash immutable parts (for consistency)
+    instance_hash = 0
+    for col in fixed_feat:
+        if col in original_instance.index:
+            instance_hash ^= hash((col, original_instance[col]))
+
+    # Hash current row (for diversity)
+    row_hash = 0
+    for col, val in row.items():
+        row_hash ^= hash((col, val))
+
+    # Combine with XOR (very fast)
+    projection_seed = (instance_hash ^ row_hash) % (2 ** 31)
+    # print(f'$$$$$$$$$$$$$$$$$SEED IS {projection_seed}$$$$$$$$$$$$$$$$$$$$$')
+    local_rng = np.random.RandomState(projection_seed)
+    # Reset timeout flag and start timer
+    timeout_occurred = False
+    timer = threading.Timer(5.0, timeout_handler)
+    timer.start()
+
+    try:
+        # dataset = d.data_df
+        # dataset = cf_example.data_interface.data_df
+        # dataset = pd.read_csv(args.dataset_path)
+        dataset = cf_example.data_interface.data_df
+        viable_cols = [col for col in dataset.columns if col not in fixed_feat]
+        viable_cols = [col for col in viable_cols if col in dic_cols]
+        must_cons = set()
+        need_proj = False
+        violation_set = []
+        cons_set = [[]] * len(constraints)
+        starting_viol = set()
+        # starting_viol = set()
+        # for cons in range(len(constraints)):
+        #     indices = cons_function(dataset, row_val, cons, [val_col])
+        #     val_cons_set = dataset[indices]
+        #     if len(val_cons_set) != 0 and (cons not in dic_cols[val_col]):
+        #         starting_viol.update(np.where(indices)[0])
+        #         if len(starting_viol) > gamma:
+        #             return None
+        #     val_cons_dfs[cons] = val_cons_set
+
+        for cons in range(len(constraints)):
+            non_follow_cons = cons_function(dataset, row, cons)
+            violation_set.append(dataset.loc[non_follow_cons])
+            if len(non_follow_cons) == 0:
+                continue
+            count = non_follow_cons.sum()
+            if count > 0:
+                if cons in bin_cons:
+                    indices = np.where(non_follow_cons)[0]
+                    starting_viol.update(indices)
+                    cons_set[cons] = indices
+                need_proj = True
+                must_cons.add(cons)
+        if not need_proj:
+            return row.copy()
+        local_rng.shuffle(viable_cols)
+        for i in range(1, len(viable_cols) + 1):
+            combs = list(itertools.combinations(viable_cols, i))
+            # print(combs)
+            for comb in combs:
+                if not all(any(feat in comb for feat in cons_feat[cons]) for cons in must_cons):
+                    continue
+                row_per = row.copy()
+                comb_iters = []
+                for col in comb[:-1]:
+                    if col in cont_feat:
+                        val_iter = get_value_range_optimized(dataset, col, True)
+                        val_iter = single_pred_cons_optimized(val_iter, col, constraints, dic_cols, unary_cons_lst_single)
+                        val_iter.sort(key=lambda x: abs(x - row_per[col]))
+                        if row_per[col] in val_iter:
+                            val_iter.remove(row_per[col])
+                    else:
+                        val_iter = get_value_range_optimized(dataset, col, False)
+                        val_iter = single_pred_cons_optimized(val_iter, col, constraints, dic_cols, unary_cons_lst_single)
+                        local_rng.shuffle(val_iter)
+                        if row_per[col] in val_iter:
+                            val_iter.remove(row_per[col])
+                    comb_iters.append([(val, col) for val in val_iter])
+                all_combinations = itertools.product(*comb_iters)
+                for vals in all_combinations:
+                    if timeout_occurred:
+                        print("Projection function timed out")
+                        return None
+                    row_val = row_per.copy()
+                    for val, val_col in vals:
+                        row_val[val_col] = val
+                    res = smart_project_optimized_safe(row_val, comb[-1], dataset, cont_feat, constraints, dic_cols, cons_function)
+                    if res is not None:
+                        row_val[comb[-1]] = res
+                        print('Success')
+                        print(row_val)
+                        return row_val
+        else:
+            return None
+    except TimeoutError:
+        print("Projection function timed out")
+        return None
+    finally:
+        timer.cancel()
+
+def project_instances(cf_example, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function, cons_feat,
+                      unary_cons_lst_single,bin_cons):
+    project_cfs_df = cf_example.final_cfs_df_sparse.copy()
+
+    for col in df.columns:
+        if col in cont_feat + ['label']:
+            continue
+        project_cfs_df[col] = pd.Categorical(project_cfs_df[col],
+                                             categories=d.data_df[col].cat.categories)
+    projected_cfs_df = project_cfs_df.copy()
+    projected_cfs_df = projected_cfs_df[1:0]
+    for index, row in project_cfs_df.iterrows():
+        print(f'project instance {index}')
+        proj_row = project_constraints_exact_fast(row, cf_example, fixed_feat, cont_feat, dic_cols, constraints,
+                                                  cons_function, cons_feat, unary_cons_lst_single,bin_cons)
+        # proj_row = project_constraints_exact_fast_optimized(row, cf_example, fixed_feat, cont_feat, dic_cols, constraints,
+        #                                           cons_function, cons_feat, unary_cons_lst_single)
+        if proj_row is not None:
+            projected_cfs_df.loc[len(projected_cfs_df)] = proj_row
+    return projected_cfs_df
+
+
+def project_counterfactuals(dice_exp, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function, cons_feat,
+                            unary_cons_lst_single,bin_cons):
+    all_instances_cfs = []
+    for cf_example in dice_exp.cf_examples_list:
+        all_instances_cfs.append(
+            project_instances(cf_example, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function,
+                              cons_feat, unary_cons_lst_single,bin_cons))
+    return all_instances_cfs
+
+def smart_project_optimized_safe(row_val, val_col, dataset, cont_feat, constraints, dic_cols, cons_function):
+    """Safe smart projection that exactly matches original constraint logic"""
+    val_cons_dfs = {}
+
+    # EXACT original logic for constraint violation checking
+    for cons in range(len(constraints)):
+        val_cons_set = dataset[cons_function(dataset, row_val, cons, [val_col])]
+        if len(val_cons_set) != 0 and (cons not in dic_cols.get(val_col, [])):
+            return None
+        val_cons_dfs[cons] = val_cons_set
+
+    # Use optimized range generation
+    if val_col in cont_feat:
+        possible_values = list(range(dataset[val_col].min(), dataset[val_col].max() + 1))
+    else:
+        possible_values = list(dataset[val_col].unique())
+
+    # EXACT original constraint processing logic
+    for count, cons in enumerate(dic_cols.get(val_col, [])):
+        prev_values = possible_values.copy()
+
+        if len(val_cons_dfs[cons]) == 0:
+            continue
+
+        for pred in constraints[cons]:
+            if pred.find('cf_row') == -1:
+                continue
+
+            first_clause, op, second_clause = pred.split(' ')
+            cf_pred = first_clause if 'cf_row' in first_clause else second_clause
+            cf_col = cf_pred.split('.')[1]
+
+            if val_col != cf_col:
+                continue
+
+            df_pred = first_clause if cf_pred == second_clause else second_clause
+
+            # Use vectorized operations but with EXACT original logic
+            if 'df.' in df_pred:
+                unique_vals = val_cons_dfs[cons][cf_col].unique()
+                possible_values_np = np.array(possible_values)
+
+                if op == '==':
+                    mask = ~np.isin(possible_values_np, unique_vals)
+                elif op == '!=':
+                    mask = np.isin(possible_values_np, unique_vals)
+                elif op == '>':
+                    if cf_pred == second_clause:
+                        max_val = unique_vals.max()
+                        mask = possible_values_np >= max_val
+                    else:
+                        min_val = unique_vals.min()
+                        mask = possible_values_np <= min_val
+                elif op == '>=':
+                    if cf_pred == second_clause:
+                        max_val = unique_vals.max()
+                        mask = possible_values_np > max_val
+                    else:
+                        min_val = unique_vals.min()
+                        mask = possible_values_np < min_val
+                elif op == '<':
+                    if cf_pred == second_clause:
+                        min_val = unique_vals.min()
+                        mask = possible_values_np <= min_val
+                    else:
+                        max_val = unique_vals.max()
+                        mask = possible_values_np >= max_val
+                elif op == '<=':
+                    if cf_pred == second_clause:
+                        min_val = unique_vals.min()
+                        mask = possible_values_np < min_val
+                    else:
+                        max_val = unique_vals.max()
+                        mask = possible_values_np > max_val
+
+                possible_values = possible_values_np[mask].tolist()
+            else:
+                # Handle constants with vectorized operations
+                const_value = float(df_pred) if '"' not in df_pred else df_pred[1:-1]
+                possible_values_np = np.array(possible_values)
+
+                if op == '==':
+                    mask = possible_values_np != const_value
+                elif op == '!=':
+                    mask = possible_values_np == const_value
+                elif op == '>':
+                    mask = possible_values_np <= const_value
+                elif op == '>=':
+                    mask = possible_values_np < const_value
+                elif op == '<':
+                    mask = possible_values_np >= const_value
+                elif op == '<=':
+                    mask = possible_values_np > const_value
+
+                possible_values = possible_values_np[mask].tolist()
+
+            # EXACT original failure handling
+            if not possible_values:
+                return None
+            break
+
+    # Original return logic
+    if possible_values:
+        if isinstance(possible_values[0], numbers.Number) and not isinstance(possible_values[0], bool):
+            return min(possible_values, key=lambda x: abs(x - row_val[val_col]))
+        return possible_values[0]
+
+    return None
+
+# Timing utility
+@contextmanager
+def timed_section(name, queue=None):
+    """Context manager for timing code sections"""
+    start = time.time()
+    yield
+    duration = time.time() - start
+    msg = f"{name} took {duration:.2f} seconds"
+    print(msg)
+    if queue:
+        queue.put({'type': 'progress', 'text': msg})
+
+def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_feat, d, dic_cols, constraints,
+                        cons_function, cons_feat, unary_cons_lst_single,bin_cons, transformer, progress_queue=None):
+    with timed_section("Projecting counterfactuals", progress_queue):
+        projected_cfs = project_counterfactuals(exp, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function,
+                                                cons_feat, unary_cons_lst_single,bin_cons)
+
+    all_accepted_instances = []
+    for i, cfs in enumerate(projected_cfs):
+        accepted_final_cfs = []
+        cfs = cfs.drop('label', axis=1)
+        probs = model(torch.tensor(transformer.transform(cfs).values.astype('float32')).float()).detach().numpy()
+        labels = np.round(probs)
+        accepted = cfs[labels == 1]
+        print('###########ACCEPTED#############')
+        print(accepted)
+
+        not_accepted = cfs[labels == 0]
+        print('###########NOT ACCEPTED#############')
+        print(not_accepted)
+        if len(not_accepted) == 0:
+            return accepted
+        features_to_vary = list(df.columns)
+        for feat in fixed_feat:
+            features_to_vary.remove(feat)
+
+        not_accepted_final_cfs = []
+        iteration = 0
+        while len(accepted) < threshold and iteration < 3:
+            iteration += 1
+            if progress_queue:
+                progress_queue.put({'type': 'progress',
+                                    'text': f'BFS iteration {iteration}, found {len(accepted)} valid counterfactuals'})
+
+            try:
+                dice_exp_random = exp_random.generate_counterfactuals(not_accepted, total_CFs=threshold,
+                                                                      desired_class=1,
+                                                                      verbose=True,
+                                                                      learning_rate=0.1,  # Increased
+                                                                      min_iter=5,  # Reduced
+                                                                      max_iter=50,  # Reduced
+                                                                      features_to_vary=features_to_vary)
+            except:
+                break
+
+            projected_cfs_not_accepted = project_counterfactuals(dice_exp_random, df, cont_feat, d, fixed_feat,
+                                                                 dic_cols, constraints, cons_function, cons_feat,
+                                                                 unary_cons_lst_single,bin_cons)
+            not_accepted = None
+            for cfs in projected_cfs_not_accepted:
+                cfs = cfs.drop('label', axis=1)
+                probs = model(
+                    torch.tensor(transformer.transform(cfs).values.astype('float32')).float()).detach().numpy()
+                labels = np.round(probs)
+                accepted_2 = cfs[labels == 1]
+                not_accepted_final_cfs.append(accepted_2)
+                if not_accepted is None:
+                    not_accepted = cfs[labels == 0]
+                else:
+                    not_accepted = pd.concat([not_accepted, cfs[labels == 0]])
+                if len(accepted_2) != 0:
+                    accepted = pd.concat([accepted, accepted_2], ignore_index=True)
+                    accepted_final_cfs.append(accepted_2)
+
+        print('###########ACCEPTED NEW#############')
+        print(accepted)
+        return accepted
+    return None
+
+
+def single_pred_cons(val_iter, col, constraints, dic_cols, unary_cons_lst_single):
+    if col not in dic_cols:
+        return val_iter
+    common_elements = set(unary_cons_lst_single) & set(dic_cols[col])
+    for cons in common_elements:
+        _, op, constant = constraints[cons][0].split(' ')
+        if op == '>':
+            constant = float(constant)
+            ind = bisect.bisect_right(val_iter, constant)
+            val_iter = val_iter[:ind]
+        elif op == '>=':
+            constant = float(constant)
+            ind = bisect.bisect_left(val_iter, constant)
+            val_iter = val_iter[:ind]
+        elif op == '<':
+            constant = float(constant)
+            ind = bisect.bisect_left(val_iter, constant)
+            val_iter = val_iter[ind:]
+        elif op == '<=':
+            constant = float(constant)
+            ind = bisect.bisect_right(val_iter, constant)
+            val_iter = val_iter[ind]
+        elif op == '==':
+            if constant in val_iter:
+                val_iter.remove(constant)
+        else:
+            if constant in val_iter:
+                val_iter = [constant]
+    return val_iter
+
+
+def smart_project(row_val, val_col, dataset, cont_feat, constraints, dic_cols, cons_function):
+    val_cons_dfs = {}
+    for cons in range(len(constraints)):
+        val_cons_set = dataset[cons_function(dataset, row_val, cons, [val_col])]
+        if len(val_cons_set) != 0 and (cons not in dic_cols[val_col]):
+            return None
+        val_cons_dfs[cons] = val_cons_set
+
+    if val_col in cont_feat:
+        possible_values = list(range(dataset[val_col].min(), dataset[val_col].max() + 1))
+    else:
+        possible_values = list(dataset[val_col].unique())
+
+    for count, cons in enumerate(dic_cols[val_col]):
+        prev_values = possible_values
+        if len(val_cons_dfs[cons]) == 0:
+            continue
+        for pred in constraints[cons]:
+            if pred.find('cf_row') == -1:
+                continue
+            first_clause, op, second_clause = pred.split(' ')
+            cf_pred = first_clause if 'cf_row' in first_clause else second_clause
+            cf_col = cf_pred.split('.')[1]
+
+            if val_col != cf_col:
+                continue
+            df_pred = first_clause if cf_pred == second_clause else second_clause
+
+            if 'df.' in df_pred:
+                if op == '==':
+                    possible_values = [elem for elem in possible_values if
+                                       elem not in val_cons_dfs[cons][cf_col].unique()]
+                elif op == '!=':
+                    possible_values = [elem for elem in possible_values if
+                                       elem in val_cons_dfs[cons][cf_col].unique()]
+                elif op == '>':
+                    if cf_pred == second_clause:
+                        max_val = val_cons_dfs[cons][cf_col].unique().max()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np >= max_val])
+                    else:
+                        min_val = val_cons_dfs[cons][cf_col].unique().min()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np <= min_val])
+                elif op == '>=':
+                    if cf_pred == second_clause:
+                        max_val = val_cons_dfs[cons][cf_col].unique().max()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np > max_val])
+                    else:
+                        min_val = val_cons_dfs[cons][cf_col].unique().min()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np < min_val])
+                elif op == '<':
+                    if cf_pred == second_clause:
+                        min_val = val_cons_dfs[cons][cf_col].unique().min()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np <= min_val])
+                    else:
+                        max_val = val_cons_dfs[cons][cf_col].unique().max()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np >= max_val])
+                elif op == '<=':
+                    if cf_pred == second_clause:
+                        min_val = val_cons_dfs[cons][cf_col].unique().min()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np < min_val])
+                    else:
+                        max_val = val_cons_dfs[cons][cf_col].unique().max()
+                        possible_values_np = np.array(possible_values)
+                        possible_values = list(possible_values_np[possible_values_np > max_val])
+
+            else:
+                const_value = float(df_pred) if '"' not in df_pred else df_pred[1:-1]
+
+                if op == '==':
+                    possible_values = [elem for elem in possible_values if
+                                       elem not in [const_value]]
+                elif op == '!=':
+                    possible_values = [elem for elem in possible_values if
+                                       elem in [const_value]]
+                elif op == '>':
+                    min_val = const_value
+                    possible_values_np = np.array(possible_values)
+                    possible_values = list(possible_values_np[possible_values_np <= min_val])
+                elif op == '>=':
+                    min_val = const_value
+                    possible_values_np = np.array(possible_values)
+                    possible_values = list(possible_values_np[possible_values_np < min_val])
+                elif op == '<':
+                    max_val = const_value
+                    possible_values_np = np.array(possible_values)
+                    possible_values = list(possible_values_np[possible_values_np >= max_val])
+                elif op == '<=':
+                    max_val = const_value
+                    possible_values_np = np.array(possible_values)
+                    possible_values = list(possible_values_np[possible_values_np > max_val])
+            if not possible_values:
+                return None
+            break
+    if isinstance(possible_values[0], numbers.Number) and not isinstance(possible_values[0], bool):
+        return min(possible_values, key=lambda x: abs(x - row_val[val_col]))
+    return possible_values[0]
+
+def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_feat, k,
+                         model_cache, transformer_cache, constraints_cache, progress_queue=None):
+    """Modified to use caches and progress queue and return both DiCE and CoDeC results"""
+
+    def send_progress(message):
+        if progress_queue:
+            progress_queue.put({'type': 'progress', 'text': message})
+
+    # Load constraints with caching
+    if constraints_path in constraints_cache:
+        constraint_data = constraints_cache[constraints_path]
+        constraints, dic_cols, cons_function, cons_feat, unary_cons_lst, unary_cons_lst_single, bin_cons = constraint_data
+    else:
+        send_progress("Loading constraints")
+        constraint_data = load_constraints(constraints_path)
+        constraints_cache[constraints_path] = constraint_data
+        constraints, dic_cols, cons_function, cons_feat, unary_cons_lst, unary_cons_lst_single, bin_cons = constraint_data
+
+    # Load dataset
+    send_progress("Loading dataset")
+    df = pd.read_csv(dataset_path)
+
+    cont_feat = []
+    for col in df.columns:
+        if df[col].dtype != 'object' and col != 'label':
+            cont_feat.append(col)
+    for col in df.columns:
+        if col in cont_feat + ['label']:
+            continue
+        df[col] = df[col].astype('object')
+
+    y = df['label']
+    train_dataset, test_dataset, y_train, y_test = train_test_split(df, y, test_size=0.2, random_state=0, stratify=y)
+    x_train = train_dataset.drop('label', axis=1)
+
+    # FIXED: Use unified model loading that checks disk first, then cache, then trains
+    cache_key = dataset_path
+    model_state_dict_path = f'{dataset_path}_model_state_dict.dict'
+
+    # Check if model is already in cache
+    if cache_key in model_cache:
+        model = model_cache[cache_key]
+        transformer = transformer_cache[cache_key]
+        d = dice_ml.Data(dataframe=train_dataset, continuous_features=cont_feat, outcome_name='label')
+        print("Model loaded from cache")
+    else:
+        send_progress("Preparing model and transformer")
+        d = dice_ml.Data(dataframe=train_dataset, continuous_features=cont_feat, outcome_name='label')
+        transformer = DataTransfomer('ohe-min-max')
+        transformer.feed_data_params(d)
+        transformer.initialize_transform_func()
+        X_train = transformer.transform(x_train)
+
+        model = Mlp(X_train.shape[1], [100, 1])
+
+        # Check if model exists on disk BEFORE setting to training mode
+        if os.path.exists(model_state_dict_path):
+            model.load_state_dict(torch.load(model_state_dict_path))
+            print("Model loaded from disk")
+        else:
+            # Only train if model doesn't exist on disk
+            print("Training new model...")
+            model.train()
+            X_train_fixed = X_train.values.astype(np.float32)
+            train_loader = DataLoader(
+                TensorDataset(torch.from_numpy(X_train_fixed), torch.Tensor(y_train.values.astype('int'))),
+                64, shuffle=True)
+            model = pretrain(model, 'cpu', train_loader, lr=1e-4, epochs=1000)
+            torch.save(model.state_dict(), model_state_dict_path)
+            print('Model trained and saved to disk')
+
+        # Cache for future use
+        model_cache[cache_key] = model
+        transformer_cache[cache_key] = transformer
+    model.eval()
+    m = dice_ml.Model(model=model, backend='PYT', func="ohe-min-max")
+    exp_random = dice_ml.Dice(d, m, method="gradient", constraints=False)
+
+    features_to_vary = list(df.columns)
+    for feat in fixed_feat:
+        features_to_vary.remove(feat)
+
+    send_progress("Generating initial counterfactuals")
+    dice_exp_random = exp_random.generate_counterfactuals(
+        query_instances,
+        total_CFs=k,
+        desired_class=1,
+        verbose=True,
+        features_to_vary=features_to_vary,
+        min_iter=5,  # Reduced
+        max_iter=50,  # Reduced
+        learning_rate=0.1  # Increased
+    )
+    dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.to_csv('dice_gui.csv')
+    with pd.option_context('display.max_rows', None,
+                           'display.max_columns', None,
+                           'display.width', None,
+                           'display.max_colwidth', None):
+        print(dice_exp_random.cf_examples_list[0].final_cfs_df_sparse)
+
+    # STORE DICE RESULTS
+    dice_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
+    dice_cfs_processed, dice_dpp_score, dice_distances = n_best_cfs_heuristic(dice_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    # with open('dice_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((dice_cfs_processed, dice_dpp_score, dice_distances), f)
+
+    send_progress("Running BFS for constraint satisfaction")
+    codec_cfs = bfs_counterfactuals(dice_exp_random, k, model, fixed_feat, exp_random, df, cont_feat, d,
+                                   dic_cols, constraints, cons_function, cons_feat, unary_cons_lst_single, bin_cons, transformer,
+                                   progress_queue)
+
+    codec_cfs_processed, codec_dpp_score, codec_distances = n_best_cfs_heuristic(codec_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    # with open('codec_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((codec_cfs_processed, codec_dpp_score, codec_distances), f)
+
+    # Return both DiCE and CoDeC results
+    return {
+        'codec_results': (codec_cfs_processed, codec_dpp_score, codec_distances),
+        'dice_results': (dice_cfs_processed, dice_dpp_score, dice_distances)
+    }
 
 # Set CustomTkinter appearance
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -533,7 +1328,7 @@ class ModernCounterfactualGUI:
 
         features_header = ctk.CTkLabel(
             features_frame,
-            text="Immutable Features",
+            text="Immutable Attributes",
             font=("SF Pro Display", 26, "bold"),
             text_color=self.colors['text_primary']
         )
@@ -700,7 +1495,6 @@ class ModernCounterfactualGUI:
         """Display results based on current mode"""
         if self.current_results_mode in self.stored_results:
             data = self.stored_results[self.current_results_mode]
-
             # Update metrics
             self.diversity_label.configure(text=f"{data['diversity_score']:.3f}")
             avg_distance = sum(data['distances']) / len(data['distances']) if data['distances'] else 0
@@ -1733,9 +2527,13 @@ class ModernCounterfactualGUI:
 
     def display_results(self, data):
         """Display results in scrollable table format showing all attributes"""
-        # Clear existing results
-        for widget in self.results_table_frame.winfo_children():
+        # Clear existing results - destroy from bottom up to avoid reference issues
+        children = self.results_table_frame.winfo_children()
+        for widget in reversed(children):
             widget.destroy()
+
+        # CRITICAL: Update the frame to process the destroy events
+        self.results_table_frame.update()
 
         # Create title
         title_label = ctk.CTkLabel(
@@ -1790,54 +2588,44 @@ class ModernCounterfactualGUI:
         # Calculate dynamic column widths based on content
         def calculate_column_width(header_text, values_list):
             """Calculate optimal column width based on header and content"""
-            # Get max length from header
             max_len = len(header_text)
-
-            # Check all values in this column
             for value in values_list:
                 if isinstance(value, float):
                     val_str = f"{value:.2f}" if not value.is_integer() else str(int(value))
                 else:
                     val_str = str(value)
-                # Account for arrow prefix for changed values
                 val_str = f"→ {val_str}"
                 max_len = max(max_len, len(val_str))
-
-            # Convert to pixels (approximately 10 pixels per character + padding)
             return max(120, min(300, max_len * 10 + 30))
 
         # Calculate widths for each column
         col_widths = {
             'Instance': 140,
-            'Distance': 150  # Increased width for Distance column
+            'Distance': 150
         }
 
         # Get all values for each feature to calculate optimal width
         feature_widths = {}
         for feature in features:
-            # Collect all values for this feature
             all_values = [data['initial_instance'].get(feature, 'N/A')]
             all_values.extend([cf.get(feature, 'N/A') for cf in data['counterfactuals']])
-
-            # Calculate width based on header and values
             header_text = feature.replace('_', ' ').title()
             feature_widths[feature] = calculate_column_width(header_text, all_values)
 
-        # Calculate total table width with extra padding for safety
-        # Add extra space: base columns + feature columns + padding between each column + extra buffer
-        num_columns = len(features) + 2  # features + Instance + Distance
+        # Calculate total table width
+        num_columns = len(features) + 2
         padding_per_column = 20
-        extra_buffer = 400  # Generous buffer to ensure we can scroll to see everything
+        extra_buffer = 400
         total_width = col_widths['Instance'] + col_widths['Distance'] + sum(feature_widths.values()) + (
-                    num_columns * padding_per_column) + extra_buffer
+                num_columns * padding_per_column) + extra_buffer
 
-        # Calculate total height needed (header + all rows)
-        num_rows = 1 + len(data['counterfactuals'])  # Initial + counterfactuals
-        row_height = 54  # 50 for row + 4 for spacing
-        header_height = 65  # 60 + 5 spacing
-        total_height = header_height + (num_rows * row_height) + 20  # Extra padding
+        # Calculate total height needed
+        num_rows = 1 + len(data['counterfactuals'])
+        row_height = 54
+        header_height = 65
+        total_height = header_height + (num_rows * row_height) + 20
 
-        # Create table container with explicit minimum width and height
+        # Create table container
         table_container = ctk.CTkFrame(scrollable_frame, fg_color="transparent", width=total_width, height=total_height)
         table_container.pack()
         table_container.pack_propagate(False)
@@ -1853,14 +2641,13 @@ class ModernCounterfactualGUI:
         header_inner.pack(fill='both', expand=True, padx=10, pady=10)
         header_inner.pack_propagate(False)
 
-        # Use place geometry manager for precise alignment
+        # Create headers
         current_x = 0
 
-        # Instance header
         instance_header = ctk.CTkLabel(
             header_inner,
             text="Instance",
-            font=("SF Pro Display", 18, "bold"),
+            font=("SF Pro Display", 22, "bold"),
             text_color=self.colors['accent'],
             width=col_widths['Instance'],
             anchor='w'
@@ -1868,13 +2655,12 @@ class ModernCounterfactualGUI:
         instance_header.place(x=current_x, y=0)
         current_x += col_widths['Instance'] + 10
 
-        # Feature headers
         for feature in features:
             width = feature_widths[feature]
             header_label = ctk.CTkLabel(
                 header_inner,
                 text=feature.replace('_', ' ').title(),
-                font=("SF Pro Display", 16, "bold"),
+                font=("SF Pro Display", 22, "bold"),
                 text_color=self.colors['text_secondary'],
                 width=width,
                 anchor='w'
@@ -1882,34 +2668,38 @@ class ModernCounterfactualGUI:
             header_label.place(x=current_x, y=0)
             current_x += width + 10
 
-        # Distance header
         distance_header = ctk.CTkLabel(
             header_inner,
             text="Distance",
-            font=("SF Pro Display", 18, "bold"),
+            font=("SF Pro Display", 22, "bold"),
             text_color=self.colors['accent'],
             width=col_widths['Distance'],
             anchor='w'
         )
         distance_header.place(x=current_x, y=0)
+
         # Data rows container
         rows_container = ctk.CTkFrame(table_container, fg_color="transparent", width=total_width)
         rows_container.pack(fill='both', expand=True)
 
-        # Data rows
-        all_instances = [('Initial', data['initial_instance'], None)] + \
-                        [(f'Option {i + 1}', cf, data['distances'][i]) for i, cf in enumerate(data['counterfactuals'])]
+        # Build all_instances list
+        all_instances = [('Initial', data['initial_instance'], None)]
+        for i in range(len(data['counterfactuals'])):
+            cf = data['counterfactuals'][i]
+            distance = data['distances'][i] if i < len(data['distances']) else 0.0
+            all_instances.append((f'Option {i + 1}', cf, distance))
 
+        # Create rows
         for row_idx, (label_text, instance, distance) in enumerate(all_instances):
             # Determine row styling
-            if row_idx == 0:  # Initial instance
+            if row_idx == 0:
                 row_color = self.colors['bg_tertiary']
                 label_color = self.colors['text_primary']
-            else:  # Counterfactuals
+            else:
                 row_color = self.colors['bg_primary']
                 label_color = self.colors['success']
 
-            # Create row frame with explicit width
+            # Create row frame
             row_frame = ctk.CTkFrame(rows_container, fg_color=row_color, corner_radius=8, height=50, width=total_width)
             row_frame.pack(fill='x', pady=2)
             row_frame.pack_propagate(False)
@@ -1919,14 +2709,13 @@ class ModernCounterfactualGUI:
             row_inner.pack(fill='both', expand=True, padx=10, pady=8)
             row_inner.pack_propagate(False)
 
-            # Use place for precise alignment matching headers
+            # Create row content
             current_x = 0
 
-            # Instance label
             instance_label = ctk.CTkLabel(
                 row_inner,
                 text=label_text,
-                font=("SF Pro Display", 17, "bold"),
+                font=("SF Pro Display", 20, "bold"),
                 text_color=label_color,
                 width=col_widths['Instance'],
                 anchor='w'
@@ -1934,12 +2723,10 @@ class ModernCounterfactualGUI:
             instance_label.place(x=current_x, y=0)
             current_x += col_widths['Instance'] + 10
 
-            # Feature values - aligned with headers
             for feature in features:
                 width = feature_widths[feature]
                 value = instance.get(feature, 'N/A')
 
-                # Format value
                 if isinstance(value, float):
                     if value.is_integer():
                         value_text = str(int(value))
@@ -1948,19 +2735,17 @@ class ModernCounterfactualGUI:
                 else:
                     value_text = str(value)
 
-                # Check if changed (for counterfactuals)
                 changed = False
-                if row_idx > 0:  # Not initial instance
+                if row_idx > 0:
                     initial_value = data['initial_instance'].get(feature)
                     changed = self.has_changed(value, initial_value)
                     if changed:
                         value_text = f"→ {value_text}"
 
-                # Create value label
                 value_label = ctk.CTkLabel(
                     row_inner,
                     text=value_text,
-                    font=("SF Pro Display", 17, "bold" if changed else "normal"),
+                    font=("SF Pro Display", 20, "bold" if changed else "normal"),
                     text_color=self.colors['accent'] if changed else self.colors['text_primary'],
                     width=width,
                     anchor='w'
@@ -1968,93 +2753,68 @@ class ModernCounterfactualGUI:
                 value_label.place(x=current_x, y=0)
                 current_x += width + 10
 
-            # Distance value
             dist_text = f"{distance:.3f}" if distance is not None else "--"
             dist_label = ctk.CTkLabel(
                 row_inner,
                 text=dist_text,
-                font=("SF Pro Display", 16, "bold"),
+                font=("SF Pro Display", 20, "bold"),
                 text_color=self.colors['warning'] if distance is not None else self.colors['text_dim'],
                 width=col_widths['Distance'],
                 anchor='w'
             )
             dist_label.place(x=current_x, y=0)
-            print(f"Distance value '{dist_text}' placed at x={current_x}")
-            # Configure scroll region
-        def configure_scroll(event=None):
-            # Update the scroll region to encompass all content
-            scrollable_frame.update_idletasks()
 
-            # Force the table container to maintain its size
-            table_container.configure(width=total_width, height=total_height)
+        # CRITICAL: Force the scrollable frame to update its size
+        scrollable_frame.update_idletasks()
 
-            # Get the actual bounds
+        # Configure scroll region AFTER all widgets are created and updated
+        def configure_scroll():
+            # Get the bounding box of all widgets in the scrollable frame
+            canvas.update_idletasks()
             bbox = canvas.bbox("all")
-
             if bbox:
-                # Always use our calculated dimensions as minimum
-                canvas.configure(scrollregion=(0, 0, total_width, total_height))
+                # Set scroll region to the actual content size
+                canvas.configure(scrollregion=bbox)
             else:
-                # If bbox fails, use our calculated dimensions
+                # Fallback to calculated dimensions
                 canvas.configure(scrollregion=(0, 0, total_width, total_height))
 
-            # Set canvas window size
-            canvas_width = canvas.winfo_width()
-            canvas_height = canvas.winfo_height()
+            # Ensure canvas window width is set
+            canvas.itemconfig(canvas_window, width=max(total_width, canvas.winfo_width()))
 
-            # Always set the window width to our total width to ensure scrolling works
-            canvas.itemconfig(canvas_window, width=total_width)
-
-            # Configure height - allow natural height but ensure minimum
-            if total_height > canvas_height:
-                canvas.itemconfig(canvas_window, height=total_height)
-
-        # Bind configuration events
-        scrollable_frame.bind("<Configure>", configure_scroll)
-        canvas.bind("<Configure>", configure_scroll)
-
-        # Force initial configuration after GUI updates
-        # Force initial configuration after GUI updates
+        # Configure immediately and after a short delay
+        configure_scroll()
+        self.root.after(50, configure_scroll)
         self.root.after(100, configure_scroll)
-        self.root.after(200, configure_scroll)  # Call again to ensure proper sizing
-        self.root.after(300, lambda: canvas.xview_moveto(0))  # Reset horizontal scroll to start
-        self.root.after(300, lambda: canvas.yview_moveto(0))  # Reset vertical scroll to start
 
-        # Debug: Show if horizontal scrolling is needed
-        self.root.after(400, lambda: print(f"Table width: {total_width}, Canvas width: {canvas.winfo_width()}"))
+        # Reset scroll position
+        self.root.after(150, lambda: canvas.xview_moveto(0))
+        self.root.after(150, lambda: canvas.yview_moveto(0))
 
-        # Enhanced mouse wheel handling
+        # Mouse wheel handling
         def on_mousewheel(event):
-            # Check for modifier keys
             shift = (event.state & 0x1) != 0
             ctrl = (event.state & 0x4) != 0
-
             if shift or ctrl:
-                # Horizontal scroll
                 canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
             else:
-                # Vertical scroll
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        # Bind mouse events to canvas and all child widgets
+        # Bind mouse events
         def bind_mousewheel(widget):
             widget.bind("<MouseWheel>", on_mousewheel)
             widget.bind("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
             widget.bind("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
             widget.bind("<Shift-Button-4>", lambda e: canvas.xview_scroll(-1, "units"))
             widget.bind("<Shift-Button-5>", lambda e: canvas.xview_scroll(1, "units"))
-
             for child in widget.winfo_children():
                 bind_mousewheel(child)
 
-        # Apply bindings
         bind_mousewheel(canvas)
         bind_mousewheel(scrollable_frame)
 
-        # Make canvas focusable
+        # Keyboard navigation
         canvas.focus_set()
-
-        # Add keyboard navigation
         canvas.bind("<Left>", lambda e: canvas.xview_scroll(-1, "units"))
         canvas.bind("<Right>", lambda e: canvas.xview_scroll(1, "units"))
         canvas.bind("<Up>", lambda e: canvas.yview_scroll(-1, "units"))
