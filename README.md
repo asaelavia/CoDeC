@@ -4,9 +4,10 @@ CODEC generates diverse counterfactual explanations for binary classification mo
 
 ## Installation & Usage
 
-Install required packages:
+To create and activate the environment from the `environment.yml` file:
 ```bash
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate my_env_name
 ```
 
 Run the GUI application:
@@ -17,8 +18,8 @@ python gui.py
 ## Quick Demo
 
 Try the included example:
-1. Load `small_adult.csv` dataset
-2. Load `small_adult_constraints.txt` for constraints
+1. Load `nyhouse.csv` dataset
+2. Load `ny_DCs.txt` for constraints
 3. The system will automatically use the pre-trained model provided for this dataset
 
 ## Interface Overview
@@ -26,8 +27,7 @@ Try the included example:
 ### Input Parameters Tab
 ![Input Parameters Tab](Input.PNG)
 
-- **Left**: Load dataset (CSV) and constraints file, set number of counterfactuals
-- **Center**: Dataset preview with color-coded classifications (green=positive, red=negative)
+- **Left**: Load dataset (CSV) and show dataset preview. Load constraints file, and open constraints manager. Set number of counterfactuals
 - **Right**: Configure instance attributes and select immutable features
 
 ### Constraints Tab
@@ -39,10 +39,11 @@ Displays active denial constraints that ensure counterfactual feasibility.
 ![Results Tab](Results.PNG)
 
 Shows generated counterfactuals with:
-- Changed attributes highlighted with arrows (→)
+- Changed attributes highlighted with arrows (→) and changed font color.
 - Diversity score (DPP) measuring solution variety
 - Distance scores showing proximity to original instance
 
+Top right choose between DiCE and CoDeC for comparison.
 ## Quick Start
 
 1. Load a binary classification dataset (CSV with 'label' column)
@@ -61,8 +62,8 @@ Shows generated counterfactuals with:
 Constraints should be specified in a text file using the following format:
 
 ```
-¬{ t0.education_num <= 13 ∧ t0.occupation == "Prof_specialty"}
-¬{ t0.education == t1.education ∧ t0.education_num != t1.education_num }
+¬{ t0.type == t1.type ∧ t0.beds > t1.beds ∧ t0.bath > t1.bath ∧ t0.propertysqft < t1.propertysqft }
+¬{ t0.type == "Condo_for_sale" ∧ t0.bath >= 7 }
 ```
 
 Each constraint defines conditions that counterfactuals must not violate.
@@ -71,4 +72,4 @@ Each constraint defines conditions that counterfactuals must not violate.
 
 - Binary classification dataset with 'label' column (0/1)
 - Denial constraints text file
-- Python environment with dependencies from requirements.txt
+- Python environment with dependencies from environment.yml
