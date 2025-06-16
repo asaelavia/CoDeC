@@ -870,8 +870,8 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
     algorithm_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
     algorithm_cfs, dpp_score, distances = n_best_cfs_heuristic(algorithm_cfs, query_instances.iloc[0], k, transformer,
                                                                exp_random)
-    with open('dice_gui_metrics.pkl', 'wb') as f:
-        pickle.dump((algorithm_cfs, dpp_score, distances), f)
+    # with open('dice_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((algorithm_cfs, dpp_score, distances), f)
 
     with timed_section("Running BFS for constraint satisfaction", progress_queue):
         algorithm_cfs = bfs_counterfactuals(dice_exp_random, k, model, fixed_feat, exp_random, df, cont_feat, d,
@@ -881,11 +881,131 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
 
     algorithm_cfs, dpp_score, distances = n_best_cfs_heuristic(algorithm_cfs, query_instances.iloc[0], k, transformer,
                                                                exp_random)
-    with open('codec_gui_metrics.pkl', 'wb') as f:
-        pickle.dump((algorithm_cfs, dpp_score, distances), f)
+    # with open('codec_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((algorithm_cfs, dpp_score, distances), f)
 
     return algorithm_cfs, dpp_score, distances
 
+def code_counterfactuals_dice(query_instances, constraints_path, dataset_path, fixed_feat, k,
+                         model_cache, transformer_cache, constraints_cache, progress_queue=None):
+    """Modified to use caches and progress queue and return both DiCE and CoDeC results"""
+
+    def send_progress(message):
+        if progress_queue:
+            progress_queue.put({'type': 'progress', 'text': message})
+
+    # Load constraints with caching
+    if constraints_path in constraints_cache:
+        constraint_data = constraints_cache[constraints_path]
+        constraints, dic_cols, cons_function, cons_feat, unary_cons_lst, unary_cons_lst_single, bin_cons = constraint_data
+    else:
+        send_progress("Loading constraints")
+        constraint_data = load_constraints(constraints_path)
+        constraints_cache[constraints_path] = constraint_data
+        constraints, dic_cols, cons_function, cons_feat, unary_cons_lst, unary_cons_lst_single, bin_cons = constraint_data
+
+    # Load dataset
+    send_progress("Loading dataset")
+    df = pd.read_csv(dataset_path)
+
+    cont_feat = []
+    for col in df.columns:
+        if df[col].dtype != 'object' and col != 'label':
+            cont_feat.append(col)
+    for col in df.columns:
+        if col in cont_feat + ['label']:
+            continue
+        df[col] = df[col].astype('object')
+
+    y = df['label']
+    train_dataset, test_dataset, y_train, y_test = train_test_split(df, y, test_size=0.2, random_state=0, stratify=y)
+    x_train = train_dataset.drop('label', axis=1)
+
+    # FIXED: Use unified model loading that checks disk first, then cache, then trains
+    cache_key = dataset_path
+    model_state_dict_path = f'{dataset_path}_model_state_dict.dict'
+
+    # Check if model is already in cache
+    if cache_key in model_cache:
+        model = model_cache[cache_key]
+        transformer = transformer_cache[cache_key]
+        d = dice_ml.Data(dataframe=train_dataset, continuous_features=cont_feat, outcome_name='label')
+        print("Model loaded from cache")
+    else:
+        send_progress("Preparing model and transformer")
+        d = dice_ml.Data(dataframe=train_dataset, continuous_features=cont_feat, outcome_name='label')
+        transformer = DataTransfomer('ohe-min-max')
+        transformer.feed_data_params(d)
+        transformer.initialize_transform_func()
+        X_train = transformer.transform(x_train)
+
+        model = Mlp(X_train.shape[1], [100, 1])
+
+        # Check if model exists on disk BEFORE setting to training mode
+        if os.path.exists(model_state_dict_path):
+            model.load_state_dict(torch.load(model_state_dict_path))
+            print("Model loaded from disk")
+        else:
+            # Only train if model doesn't exist on disk
+            print("Training new model...")
+            model.train()
+            X_train_fixed = X_train.values.astype(np.float32)
+            train_loader = DataLoader(
+                TensorDataset(torch.from_numpy(X_train_fixed), torch.Tensor(y_train.values.astype('int'))),
+                64, shuffle=True)
+            model = pretrain(model, 'cpu', train_loader, lr=1e-4, epochs=1000)
+            torch.save(model.state_dict(), model_state_dict_path)
+            print('Model trained and saved to disk')
+
+        # Cache for future use
+        model_cache[cache_key] = model
+        transformer_cache[cache_key] = transformer
+    model.eval()
+    m = dice_ml.Model(model=model, backend='PYT', func="ohe-min-max")
+    exp_random = dice_ml.Dice(d, m, method="gradient", constraints=False)
+
+    features_to_vary = list(df.columns)
+    for feat in fixed_feat:
+        features_to_vary.remove(feat)
+
+    send_progress("Generating initial counterfactuals")
+    dice_exp_random = exp_random.generate_counterfactuals(
+        query_instances,
+        total_CFs=k,
+        desired_class=1,
+        verbose=True,
+        features_to_vary=features_to_vary,
+        min_iter=5,  # Reduced
+        max_iter=50,  # Reduced
+        learning_rate=0.1  # Increased
+    )
+    dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.to_csv('dice_gui.csv')
+    with pd.option_context('display.max_rows', None,
+                           'display.max_columns', None,
+                           'display.width', None,
+                           'display.max_colwidth', None):
+        print(dice_exp_random.cf_examples_list[0].final_cfs_df_sparse)
+
+    # STORE DICE RESULTS
+    dice_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
+    dice_cfs_processed, dice_dpp_score, dice_distances = n_best_cfs_heuristic(dice_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    # with open('dice_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((dice_cfs_processed, dice_dpp_score, dice_distances), f)
+
+    send_progress("Running BFS for constraint satisfaction")
+    codec_cfs = bfs_counterfactuals(dice_exp_random, k, model, fixed_feat, exp_random, df, cont_feat, d,
+                                   dic_cols, constraints, cons_function, cons_feat, unary_cons_lst_single, bin_cons, transformer,
+                                   progress_queue)
+
+    codec_cfs_processed, codec_dpp_score, codec_distances = n_best_cfs_heuristic(codec_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    # with open('codec_gui_metrics.pkl', 'wb') as f:
+    #     pickle.dump((codec_cfs_processed, codec_dpp_score, codec_distances), f)
+
+    # Return both DiCE and CoDeC results
+    return {
+        'codec_results': (codec_cfs_processed, codec_dpp_score, codec_distances),
+        'dice_results': (dice_cfs_processed, dice_dpp_score, dice_distances)
+    }
 
 def dpp_style(cfs, dice_inst):
     num_cfs = len(cfs)
