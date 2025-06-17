@@ -73,3 +73,6 @@ Each constraint defines conditions that counterfactuals must not violate.
 - Binary classification dataset with 'label' column (0/1)
 - Denial constraints text file
 - Python environment with dependencies from environment.yml
+
+## Demonstration Video
+- Our 3 minutes demonstration video shown on CoDeC_Video.mp4 
