@@ -24,9 +24,30 @@ import bisect
 from contextlib import contextmanager
 import numbers
 
-seed = 42
+seed = 1
 random.seed(seed)
 np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+os.environ['PYTHONHASHSEED'] = str(seed)
+diversity_seed = seed
+import hashlib
+
+
+def deterministic_hash(obj):
+    """Create a deterministic hash for any object"""
+    if isinstance(obj, dict):
+        # Sort items to ensure consistent ordering
+        items = sorted(obj.items())
+        str_repr = str(items)
+    else:
+        str_repr = str(obj)
+
+    # Use MD5 for speed (truncate to fit in int32)
+    return int(hashlib.md5(str_repr.encode()).hexdigest()[:8], 16)
 
 def extract_names_and_conditions(line):
     constraints = []
@@ -230,19 +251,27 @@ def project_constraints_exact_fast(row, cf_example, fixed_feat, cont_feat, dic_c
     # More efficient: use numeric hash instead of string operations
     original_instance = cf_example.test_instance_df.iloc[0]
 
+    # Deterministic hashing
+    instance_data = {col: original_instance[col] for col in fixed_feat if col in original_instance.index}
+    instance_hash = deterministic_hash(instance_data)
+
+    row_hash = deterministic_hash(dict(sorted(row.items())))
+
+    projection_seed = ((instance_hash ^ row_hash) + diversity_seed * 1000000) % (2 ** 31)
+
     # Hash immutable parts (for consistency)
-    instance_hash = 0
-    for col in fixed_feat:
-        if col in original_instance.index:
-            instance_hash ^= hash((col, original_instance[col]))
-
-    # Hash current row (for diversity)
-    row_hash = 0
-    for col, val in row.items():
-        row_hash ^= hash((col, val))
-
-    # Combine with XOR (very fast)
-    projection_seed = (instance_hash ^ row_hash) % (2 ** 31)
+    # instance_hash = 0
+    # for col in fixed_feat:
+    #     if col in original_instance.index:
+    #         instance_hash ^= hash((col, original_instance[col]))
+    #
+    # # Hash current row (for diversity)
+    # row_hash = 0
+    # for col, val in row.items():
+    #     row_hash ^= hash((col, val))
+    #
+    # # Combine with XOR (very fast)
+    # projection_seed = (instance_hash ^ row_hash) % (2 ** 31)
     # print(f'$$$$$$$$$$$$$$$$$SEED IS {projection_seed}$$$$$$$$$$$$$$$$$$$$$')
     local_rng = np.random.RandomState(projection_seed)
     # Reset timeout flag and start timer
@@ -321,8 +350,8 @@ def project_constraints_exact_fast(row, cf_example, fixed_feat, cont_feat, dic_c
                     res = smart_project_optimized_safe(row_val, comb[-1], dataset, cont_feat, constraints, dic_cols, cons_function)
                     if res is not None:
                         row_val[comb[-1]] = res
-                        print('Success')
-                        print(row_val)
+                        # print('Success')
+                        # print(row_val)
                         return row_val
         else:
             return None
@@ -485,7 +514,7 @@ def timed_section(name, queue=None):
         queue.put({'type': 'progress', 'text': msg})
 
 def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_feat, d, dic_cols, constraints,
-                        cons_function, cons_feat, unary_cons_lst_single,bin_cons, transformer, progress_queue=None):
+                        cons_function, cons_feat, unary_cons_lst_single,bin_cons, transformer, progress_queue=None,max_iter = 50):
     with timed_section("Projecting counterfactuals", progress_queue):
         projected_cfs = project_counterfactuals(exp, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function,
                                                 cons_feat, unary_cons_lst_single,bin_cons)
@@ -520,10 +549,10 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
             try:
                 dice_exp_random = exp_random.generate_counterfactuals(not_accepted, total_CFs=threshold,
                                                                       desired_class=1,
-                                                                      verbose=True,
+                                                                      verbose=False,
                                                                       learning_rate=0.1,  # Increased
                                                                       min_iter=5,  # Reduced
-                                                                      max_iter=50,  # Reduced
+                                                                      max_iter=max_iter,  # Reduced
                                                                       features_to_vary=features_to_vary)
             except:
                 break
@@ -689,7 +718,7 @@ def smart_project(row_val, val_col, dataset, cont_feat, constraints, dic_cols, c
     return possible_values[0]
 
 def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_feat, k,
-                         model_cache, transformer_cache, constraints_cache, progress_queue=None):
+                         model_cache, transformer_cache, constraints_cache, progress_queue=None,max_iter = 50):
     """Modified to use caches and progress queue and return both DiCE and CoDeC results"""
 
     def send_progress(message):
@@ -755,7 +784,7 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
             train_loader = DataLoader(
                 TensorDataset(torch.from_numpy(X_train_fixed), torch.Tensor(y_train.values.astype('int'))),
                 64, shuffle=True)
-            model = pretrain(model, 'cpu', train_loader, lr=1e-4, epochs=1000)
+            model = pretrain(model, 'cpu', train_loader, lr=1e-4, epochs=100)
             torch.save(model.state_dict(), model_state_dict_path)
             print('Model trained and saved to disk')
 
@@ -775,11 +804,12 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
         query_instances,
         total_CFs=k,
         desired_class=1,
-        verbose=True,
+        verbose=False,
         features_to_vary=features_to_vary,
         min_iter=5,  # Reduced
-        max_iter=50,  # Reduced
+        max_iter=max_iter,  # Reduced
         learning_rate=0.1  # Increased
+        # learning_rate=5e-2  # Increased
     )
     dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.to_csv('dice_gui.csv')
     with pd.option_context('display.max_rows', None,
@@ -791,13 +821,14 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
     # STORE DICE RESULTS
     dice_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
     dice_cfs_processed, dice_dpp_score, dice_distances = n_best_cfs_heuristic(dice_cfs, query_instances.iloc[0], k, transformer, exp_random)
+
     # with open('dice_gui_metrics.pkl', 'wb') as f:
     #     pickle.dump((dice_cfs_processed, dice_dpp_score, dice_distances), f)
 
     send_progress("Running BFS for constraint satisfaction")
     codec_cfs = bfs_counterfactuals(dice_exp_random, k, model, fixed_feat, exp_random, df, cont_feat, d,
                                    dic_cols, constraints, cons_function, cons_feat, unary_cons_lst_single, bin_cons, transformer,
-                                   progress_queue)
+                                   progress_queue,max_iter = max_iter)
 
     codec_cfs_processed, codec_dpp_score, codec_distances = n_best_cfs_heuristic(codec_cfs, query_instances.iloc[0], k, transformer, exp_random)
     # with open('codec_gui_metrics.pkl', 'wb') as f:
@@ -1559,6 +1590,20 @@ class ModernCounterfactualGUI:
         self.cf_count_label.configure(text=str(int(value)))
         self.num_counterfactuals.set(str(int(value)))
 
+    def set_initial_instance_defaults(self, default_values):
+        """Set default values for initial instance inputs"""
+        if not hasattr(self, 'initial_point_widgets') or not self.initial_point_widgets:
+            return
+
+        for column, value in default_values.items():
+            if column in self.initial_point_widgets:
+                widget = self.initial_point_widgets[column]
+                if isinstance(widget, ctk.CTkComboBox):
+                    widget.set(value)
+                else:  # CTkEntry
+                    widget.delete(0, 'end')
+                    widget.insert(0, value)
+
     def load_dataset_preview(self):
         """Load and display dataset preview"""
         try:
@@ -1573,6 +1618,40 @@ class ModernCounterfactualGUI:
 
             # Update features list
             self.setup_features_selection()
+
+            dataset_name = self.dataset_path.get()
+
+            if "nyhouse" in dataset_name:
+                # Set defaults for nyhouse dataset
+                default_values = {
+                    'type': 'Condo_for_sale',
+                    'beds': '1',
+                    'bath': '0',
+                    'propertysqft': '1230',
+                    'locality': 'Bronx_County',
+                    'sublocality': 'Manhattan'
+                }
+                self.set_initial_instance_defaults(default_values)
+
+            elif "adult_clean" in dataset_name:
+                # Set defaults for adult_clean dataset
+                default_values = {
+                    'age': '28',
+                    'workclass': 'State_gov',
+                    'education': 'Bachelors',
+                    'education_num': '13',
+                    # 'marital_status': 'Divorced',
+                    'marital_status': 'Married_civ_spouse',
+                    'occupation': 'Machine_op_inspct',
+                    # 'relationship': 'Husband',
+                    'relationship': 'Wife',
+                    'race': 'Black',
+                    'sex': 'Female',
+                    # 'hours_per_week': '1',
+                    'hours_per_week': '45',
+                    'native_country': 'United_States'
+                }
+                self.set_initial_instance_defaults(default_values)
 
         except Exception as e:
             print(f"Dataset loading error: {e}")  # Debug print
@@ -2425,7 +2504,8 @@ class ModernCounterfactualGUI:
                 model_cache=self.cached_models,
                 transformer_cache=self.cached_transformers,
                 constraints_cache=self.cached_constraints,
-                progress_queue=self.computation_queue
+                progress_queue=self.computation_queue,
+                max_iter = 15 if 'adult_clean' in self.dataset_path.get() else 500
             )
 
             # Extract both DiCE and CoDeC results
@@ -2647,7 +2727,7 @@ class ModernCounterfactualGUI:
         instance_header = ctk.CTkLabel(
             header_inner,
             text="Instance",
-            font=("SF Pro Display", 22, "bold"),
+            font=("SF Pro Display", 24, "bold"),
             text_color=self.colors['accent'],
             width=col_widths['Instance'],
             anchor='w'
@@ -2660,7 +2740,7 @@ class ModernCounterfactualGUI:
             header_label = ctk.CTkLabel(
                 header_inner,
                 text=feature.replace('_', ' ').title(),
-                font=("SF Pro Display", 22, "bold"),
+                font=("SF Pro Display", 24, "bold"),
                 text_color=self.colors['text_secondary'],
                 width=width,
                 anchor='w'
@@ -2671,7 +2751,7 @@ class ModernCounterfactualGUI:
         distance_header = ctk.CTkLabel(
             header_inner,
             text="Distance",
-            font=("SF Pro Display", 22, "bold"),
+            font=("SF Pro Display", 24, "bold"),
             text_color=self.colors['accent'],
             width=col_widths['Distance'],
             anchor='w'
@@ -2715,7 +2795,7 @@ class ModernCounterfactualGUI:
             instance_label = ctk.CTkLabel(
                 row_inner,
                 text=label_text,
-                font=("SF Pro Display", 20, "bold"),
+                font=("SF Pro Display", 22, "bold"),
                 text_color=label_color,
                 width=col_widths['Instance'],
                 anchor='w'
@@ -2745,7 +2825,7 @@ class ModernCounterfactualGUI:
                 value_label = ctk.CTkLabel(
                     row_inner,
                     text=value_text,
-                    font=("SF Pro Display", 20, "bold" if changed else "normal"),
+                    font=("SF Pro Display", 22, "bold" if changed else "normal"),
                     text_color=self.colors['accent'] if changed else self.colors['text_primary'],
                     width=width,
                     anchor='w'
@@ -2757,7 +2837,7 @@ class ModernCounterfactualGUI:
             dist_label = ctk.CTkLabel(
                 row_inner,
                 text=dist_text,
-                font=("SF Pro Display", 20, "bold"),
+                font=("SF Pro Display", 22, "bold"),
                 text_color=self.colors['warning'] if distance is not None else self.colors['text_dim'],
                 width=col_widths['Distance'],
                 anchor='w'
