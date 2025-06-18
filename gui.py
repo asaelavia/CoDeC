@@ -811,7 +811,6 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
         learning_rate=0.1  # Increased
         # learning_rate=5e-2  # Increased
     )
-    dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.to_csv('dice_gui.csv')
     with pd.option_context('display.max_rows', None,
                            'display.max_columns', None,
                            'display.width', None,
@@ -1047,7 +1046,7 @@ class ModernCounterfactualGUI:
         # Initialize variables
         self.dataset_path = tk.StringVar()
         self.constraints_path = tk.StringVar()
-        self.num_counterfactuals = tk.StringVar(value="3")
+        self.num_counterfactuals = tk.StringVar(value="2")
         self.fixed_features = set()
         self.animation_running = False
         self.current_screen = "input"
@@ -1294,11 +1293,11 @@ class ModernCounterfactualGUI:
             command=self.update_cf_count
         )
         self.num_cf_slider.pack(side='left', fill='x', expand=True, padx=(0, 20))
-        self.num_cf_slider.set(3)
+        self.num_cf_slider.set(2)
 
         self.cf_count_label = ctk.CTkLabel(
             slider_frame,
-            text="3",
+            text="2",
             font=("SF Pro Display", 32, "bold"),
             text_color=self.colors['accent'],
             width=40

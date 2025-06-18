@@ -3,7 +3,7 @@
 ¬{ t0.type == "Condo_for_sale" ∧ t0.beds >= 8 }
 ¬{ t0.type == "Co_op_for_sale" ∧ t0.beds > 6 }
 ¬{ t0.type == "Co_op_for_sale" ∧ t0.bath > 6 }
-¬{ t0.sublocality == "Manhattan" ∧ t0.beds >= 5 }
-¬{ t0.sublocality == "Manhattan" ∧ t0.bath >= 5 }
 ¬{ t0.beds >= 12 }
 ¬{ t0.bath >= 12 }
+¬{ t0.sublocality == "Manhattan" ∧ t0.beds > 4 }
+¬{ t0.sublocality == "Manhattan" ∧ t0.bath > 4 }
