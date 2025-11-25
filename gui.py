@@ -20,11 +20,11 @@ from z3 import *
 
 VERBOSE = True
 LR_NY = 0.001  # GOOD NY
-LR_ADULT = 0.03  # GOOD Adult
+LR = 0.03  # GOOD Adult
 
-MIN_ITER_ADULT = 250
+MIN_ITER = 250
 MIN_ITER_NY = 500
-MAX_ITER_ADULT = 500
+MAX_ITER = 500
 MAX_ITER_NY = 1500
 
 EPOCHS = 10
@@ -3262,9 +3262,9 @@ class ModernCounterfactualGUI:
                 transformer_cache=self.cached_transformers,
                 constraints_cache=self.cached_constraints,
                 progress_queue=self.computation_queue,
-                min_iter=MIN_ITER_ADULT if 'adult' in self.dataset_path.get() else MIN_ITER_NY,
-                max_iter=MAX_ITER_ADULT if 'adult' in self.dataset_path.get() else MAX_ITER_NY,
-                lr=LR_ADULT if 'adult' in self.dataset_path.get() else LR_NY
+                min_iter=MIN_ITER_NY if 'nyhouse' in self.dataset_path.get() else MIN_ITER,
+                max_iter=MAX_ITER_NY if 'nyhouse' in self.dataset_path.get() else MAX_ITER,
+                lr=LR_NY if 'nyhouse' in self.dataset_path.get() else LR
             )
 
             # Extract both DiCE and CoDeC results

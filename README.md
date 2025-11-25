@@ -260,23 +260,26 @@ For new datasets without pre-trained models:
 
 Key parameters can be modified at the top of `gui.py`:
 
-#### Counterfactual Generation Parameters
+#### DiCE Generation Parameters
+
+These parameters control the initial counterfactual generation by DiCE (before projection):
 ```python
-# Learning rates for gradient-based optimization
-LR_ADULT = 0.03      # Learning rate for Adult dataset
+# Learning rates for DiCE gradient-based optimization
+LR = 0.03            # Default learning rate (optimized for Adult dataset)
 LR_NY = 0.001        # Learning rate for NY Housing dataset
 
-# Iteration bounds for counterfactual search
-MIN_ITER_ADULT = 250 # Minimum gradient steps for Adult dataset
-MAX_ITER_ADULT = 500 # Maximum gradient steps for Adult dataset
+# Iteration bounds for DiCE counterfactual search
+MIN_ITER = 250       # Default minimum gradient steps
+MAX_ITER = 500       # Default maximum gradient steps
 MIN_ITER_NY = 500    # Minimum gradient steps for NY Housing dataset
 MAX_ITER_NY = 1500   # Maximum gradient steps for NY Housing dataset
 ```
 
 **Tips:**
 - Higher learning rates converge faster but may be less stable
-- More iterations allow finding better counterfactuals but increase runtime
-- Dataset-specific tuning recommended for optimal results
+- More iterations allow DiCE to find better initial counterfactuals but increase runtime
+- **For custom datasets**: Modify `LR`, `MIN_ITER`, and `MAX_ITER` (not the `_NY` variants)
+- The `_NY` variants are automatically used only for the NY Housing dataset
 
 #### Model Training Parameters
 ```python
@@ -289,6 +292,7 @@ NY_EPOCHS = 100      # Epochs for NY Housing dataset (smaller dataset needs more
 - Larger datasets typically need fewer epochs
 - Smaller datasets may require more epochs to avoid underfitting
 - Training time scales linearly with epoch count
+- **For custom datasets**: Modify `EPOCHS` (not `NY_EPOCHS`)
 
 #### GUI Appearance
 ```python
@@ -307,63 +311,44 @@ FONT_SCALE = 1.4     # Increase for larger text (e.g., 1.6), decrease for smalle
 VERBOSE = True       # Set to False to suppress detailed console output
 ```
 
-### Solver Configuration
-
-Additional parameters can be modified in the `ProjectionConfig` class:
-```python
-# In ProjectionConfig class initialization (around line 260)
-solver_timeout=10000  # Milliseconds (default: 10 seconds)
-delta=0.0            # Diversity weight (0.0 = no diversity penalty)
-```
-
-**Solver Timeout:**
-- Increase for complex constraint spaces (e.g., 50000 for 50 seconds)
-- Decrease for faster but potentially incomplete results
-- Too low may cause solver failures
-
-**Delta (Diversity Weight):**
-- `0.0` - No diversity enforcement (fastest)
-- `50.0` - Moderate diversity (balanced)
-- `100.0+` - High diversity (slower, more varied results)
-
 ### Custom Dataset Configuration
 
-When adding a new dataset, consider:
+When adding a new dataset, modify the **default parameters** (not the `_NY` variants):
 
-1. **Add learning rate tuning:**
+1. **Tune learning rate:**
 ```python
-LR_MYDATASET = 0.01  # Experiment with values between 0.001 and 0.1
+LR = 0.01  # Experiment with values between 0.001 and 0.1
 ```
 
 2. **Set iteration bounds:**
 ```python
-MIN_ITER_MYDATASET = 100
-MAX_ITER_MYDATASET = 500
+MIN_ITER = 100
+MAX_ITER = 500
 ```
 
-3. **Update the dataset detection logic:**
+3. **Set training epochs:**
 ```python
-# In code_counterfactuals function (around line 850)
-if "mydataset" in dataset_path.lower():
-    min_iter = MIN_ITER_MYDATASET
-    max_iter = MAX_ITER_MYDATASET
-    lr = LR_MYDATASET
+EPOCHS = 50  # Adjust based on dataset size
 ```
+
+**Note:** The system automatically detects "nyhouse" in the dataset filename and uses the `_NY` variants. For all other datasets, it uses the default parameters.
 
 ### Performance Optimization
 
 **For faster generation:**
 ```python
-MIN_ITER_ADULT = 50    # Reduce minimum iterations
-MAX_ITER_ADULT = 200   # Reduce maximum iterations
-LR_ADULT = 0.05        # Increase learning rate (but may reduce quality)
+MIN_ITER = 50          # Reduce minimum iterations
+MAX_ITER = 200         # Reduce maximum iterations
+LR = 0.05              # Increase learning rate (but may reduce quality)
+EPOCHS = 5             # Fewer training epochs
 ```
 
 **For higher quality:**
 ```python
-MIN_ITER_ADULT = 500   # Increase minimum iterations
-MAX_ITER_ADULT = 1000  # Increase maximum iterations
-LR_ADULT = 0.01        # Decrease learning rate for finer search
+MIN_ITER = 500         # Increase minimum iterations
+MAX_ITER = 1000        # Increase maximum iterations
+LR = 0.01              # Decrease learning rate for finer search
+EPOCHS = 50            # More training epochs
 ```
 
 **Trade-off:** Quality vs. Speed
@@ -378,57 +363,41 @@ LR_ADULT = 0.01        # Decrease learning rate for finer search
 - **Cause**: Initial instance already satisfies all constraints
 - **Solution**: Try a different initial instance or add more constraints
 
-**Issue**: Solver timeout errors
-- **Cause**: Constraint space too complex
-- **Solution**: Increase `solver_timeout` parameter or simplify constraints
-
 **Issue**: No counterfactuals generated
-- **Cause**: Constraints too restrictive or no feasible solutions exist
-- **Solution**: Review constraints for conflicts, check if target class is achievable
+- **Cause 1**: DiCE failed to generate initial counterfactuals
+  - Try adjusting `LR`, `MIN_ITER`, `MAX_ITER` parameters
+  - Check if the desired class is achievable given immutable features
+- **Cause 2**: Constraints too restrictive or conflicting
+  - Review constraints for logical conflicts
+  - Simplify constraint set temporarily to diagnose
+- **Cause 3**: Model prediction confidence too extreme
+  - Instance may be very far from decision boundary
+  - Try a different initial instance closer to boundary
+
+**Issue**: Solver timeout errors
+- **Cause**: Constraint space too complex for projection
+- **Solution**: 
+  - Simplify constraints by removing less critical ones
+  - Try a different initial instance
+  - Note: Some constraint combinations may not have feasible solutions
 
 **Issue**: Model file not found
 - **Cause**: Model cache cleared or moved
-- **Solution**: System will automatically retrain (1-2 minutes)
+- **Solution**: System will automatically retrain (takes 1-2 minutes)
+
+**Issue**: Generation is very slow
+- **Cause**: High iteration counts or complex constraints
+- **Solution**: 
+  - Reduce `MAX_ITER` parameter
+  - Reduce number of requested counterfactuals
+  - For large datasets, reduce `EPOCHS`
 
 ### Performance Tips
 
-- **Large datasets (>10K rows)**: Consider reducing training epochs
-- **Many constraints (>20)**: Increase solver timeout
-- **Slow generation**: Reduce number of requested counterfactuals
-
-## Demonstration
-
-Watch our **5-minute demonstration video** located in `video/CoDeC_Video.mp4` showing:
-- Loading datasets and constraints
-- Configuring initial instances
-- Generating and comparing results
-- Using the Constraints Manager
-
-## Example Datasets
-
-### NY Housing (nyhouse.csv)
-
-**Domain**: Real estate listings
-**Features**: Property type, beds, baths, square footage, location
-**Constraints**: Domain knowledge about property attributes
-**Use Case**: Explain why properties are predicted as high/low value
-
-### Adult Income (adult.csv)
-
-**Domain**: Census income prediction
-**Features**: Age, education, occupation, hours worked, demographics
-**Constraints**: Logical relationships (e.g., education level must match years)
-**Use Case**: Explain income classification decisions
-
-## Comparison: CODEC vs DiCE
-
-| Aspect | DiCE | CODEC |
-|--------|------|-------|
-| **Constraint Satisfaction** | No guarantee | Guaranteed via SMT solver |
-| **Diversity** | Gradient-based | DPP-optimized with constraints |
-| **Feasibility** | May be infeasible | Always feasible |
-| **Speed** | Faster | Slower (constraint solving) |
-| **Best For** | Quick exploration | Production systems requiring validity |
+- **Large datasets (>10K rows)**: Reduce `EPOCHS` to 5-10
+- **Many constraints (>20)**: Consider simplifying constraint set
+- **Slow DiCE generation**: Reduce `MAX_ITER` or decrease `MIN_ITER`
+- **Poor quality counterfactuals**: Increase `MIN_ITER` and `MAX_ITER`
 
 ## Citation
 
