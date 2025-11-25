@@ -3,4 +3,4 @@
 ¬{ t0.relationship == "Husband" ∧ t0.sex != "Male"}
 ¬{ t0.marital_status != t1.marital_status ∧ t0.occupation == t1.occupation ∧ t0.relationship == t1.relationship }
 ¬{ t0.education == t1.education ∧ t0.education_num != t1.education_num }
-¬{ t0.hours_per_week > 60}
+¬{ t0.hours_per_week > 50}

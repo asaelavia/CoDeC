@@ -325,6 +325,9 @@ class DicePyTorch(ExplainerBase):
         self.loss = self.yloss + (self.proximity_weight * self.proximity_loss) - \
             (self.diversity_weight * self.diversity_loss) + \
             (self.categorical_penalty * self.regularization_loss)
+        # self.loss =self.yloss + (self.proximity_weight * self.proximity_loss) - \
+        #     (self.diversity_weight * self.diversity_loss) + \
+        #     (self.categorical_penalty * self.regularization_loss)
         return self.loss
 
     def initialize_CFs(self, query_instance, init_near_query_instance=False):

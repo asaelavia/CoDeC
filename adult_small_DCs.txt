@@ -1,0 +1,2 @@
+¬{ t0.Education == t1.Education ∧ t0.Edu_Num != t1.Edu_Num }
+¬{ t0.Occupation == "Exec_managerial" ∧ t0.Hours <= 35 }
