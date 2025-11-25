@@ -1,78 +1,464 @@
-# CODEC: Constraints Guided Diverse Counterfactuals
+# CODEC: Constraints-Guided Diverse Counterfactuals
 
-CODEC generates diverse counterfactual explanations for binary classification models while respecting domain constraints. It helps users understand what changes would lead to different classification outcomes.
+This repository contains the implementation of CODEC, a system for generating **constraint-aware counterfactual explanations** for binary classification models. CODEC ensures that generated counterfactuals satisfy domain constraints while maintaining diversity and proximity to the original instance.
 
-## Installation & Usage
+## Overview
 
-To create and activate the environment from the `environment.yml` file:
+### What is CODEC?
+
+CODEC (Constraints-Guided Diverse Counterfactuals) addresses a critical limitation in counterfactual explanation generation: **ensuring feasibility**. While traditional methods like DiCE can generate counterfactuals that achieve the desired prediction, they often violate domain constraints, making them unrealistic or impossible in practice.
+
+**Key Innovation:**
+- **Constraint-Aware Generation**: Projects infeasible counterfactuals onto the constraint-satisfying manifold using SMT solvers
+- **Diversity Optimization**: Generates diverse sets of counterfactuals to provide users with multiple actionable options
+- **Interactive GUI**: User-friendly interface for configuring and visualizing results
+
+### Core Approach
+
+CODEC uses a **Perturb-and-Project** methodology:
+1. **Perturb**: Generate initial counterfactuals using gradient-based optimization (DiCE)
+2. **Project**: Use SMT solver-based projection to enforce denial constraints
+3. **Optimize**: Iteratively refine to maximize diversity while maintaining constraint satisfaction
+
+## Key Features
+
+### Counterfactual Generation
+- **Constraint Satisfaction**: Ensures all counterfactuals satisfy domain denial constraints
+- **Diversity Optimization**: Generates diverse sets using Determinantal Point Process (DPP) scoring
+- **Immutable Features**: Respects user-specified immutable attributes (e.g., age, race)
+- **Black-Box Compatible**: Works with neural network classifiers
+
+### Interactive GUI
+- **Visual Dataset Preview**: Browse and inspect datasets before generation
+- **Constraint Manager**: Create, edit, and preview denial constraints interactively
+- **Side-by-Side Comparison**: Compare DiCE (unconstrained) vs CODEC (constrained) results
+- **Highlighted Changes**: Visual indicators show which attributes changed and by how much
+
+### Evaluation Metrics
+- **Proximity**: MAD-normalized distance, L0 (sparsity), L1 distance
+- **Diversity**: DPP score, pairwise distances
+- **Validity**: Automatic constraint violation checking
+
+## Installation
+
+### Using Conda (Recommended)
 ```bash
+# 1. Create conda environment from file
 conda env create -f environment.yml
+
+# 2. Activate environment
 conda activate my_env_name
+
+# 3. Verify installation
+python gui.py
 ```
 
-Run the GUI application:
+### Manual Installation
+
+If you prefer to install dependencies manually:
+```bash
+# 1. Create environment with Python 3.8+
+conda create -n codec python=3.8
+
+# 2. Activate environment
+conda activate codec
+
+# 3. Install dependencies
+pip install customtkinter dice-ml scikit-learn pandas numpy torch z3-solver
+```
+
+### Requirements
+
+Key dependencies:
+- Python 3.8+
+- customtkinter (GUI framework)
+- dice-ml (base counterfactual generation)
+- scikit-learn (ML utilities)
+- torch (neural networks)
+- z3-solver (constraint solving)
+- pandas, numpy (data manipulation)
+
+See `environment.yml` for complete dependency list.
+
+## Repository Structure
+```
+.
+├── gui.py                   # Main GUI application
+├── class_models.py          # Neural network model definitions
+├── environment.yml          # Conda environment specification
+├── data/                    # Dataset directory
+│   ├── nyhouse.csv         # Example housing dataset
+│   └── adult.csv           # Example income dataset
+├── constraints/             # Constraints directory
+│   ├── ny_DCs.txt          # Example housing constraints
+│   └── adult_dcs.txt       # Example income constraints
+├── models/                  # Trained model storage
+│   └── *.dict              # Model state dictionaries
+├── video/                   # Demonstration materials
+│   └── CoDeC_Video.mp4     # 3-minute demonstration video
+├── images/                  # GUI screenshots
+│   ├── Input.PNG           # GUI input tab screenshot
+│   ├── constraints.PNG     # Constraints manager screenshot
+│   └── Results.PNG         # Results comparison screenshot
+└── README.md
+```
+
+## Quick Start
+
+### 1. Launch the GUI
 ```bash
 python gui.py
 ```
 
-## Quick Demo
+### 2. Try the Example
 
-Try the included example:
-1. Load `nyhouse.csv` dataset
-2. Load `ny_DCs.txt` for constraints
-3. The system will automatically use the pre-trained model provided for this dataset
+Use the included NY Housing example:
 
-## Interface Overview
+1. **Load Dataset**: Click "Browse" → select `data/nyhouse.csv` → "Preview" to inspect
+2. **Load Constraints**: Click "Browse" → select `constraints/ny_DCs.txt` → "Preview" to view
+3. **Configure Instance**: Set initial attribute values (defaults provided)
+4. **Set Immutability**: Check boxes for immutable features (e.g., locality, sublocality)
+5. **Generate**: Click "Generate Counterfactuals" (uses pre-trained model automatically)
+
+### 3. View Results
+
+- **CODEC Tab**: View constraint-satisfying counterfactuals
+- **DiCE Tab**: Compare with unconstrained counterfactuals
+- **Compare Button**: Side-by-side comparison view
+- **Metrics**: Diversity score (DPP) and average distance shown at top
+
+## Dataset Format
+
+### CSV Dataset Structure
+
+Your dataset must follow these requirements:
+```csv
+feature1,feature2,feature3,...,label
+value1,value2,value3,...,0
+value1,value2,value3,...,1
+```
+
+**Requirements:**
+- Last column must be named `label`
+- Label values must be 0 or 1 (binary classification)
+- Categorical features auto-detected from string columns
+- Missing values not supported
+
+**Example (nyhouse.csv):**
+```csv
+type,beds,bath,propertysqft,locality,sublocality,label
+Condo_for_sale,2,1,850,New_York,Manhattan,1
+House_for_sale,3,2,1200,New_York,Brooklyn,0
+```
+
+### Denial Constraints Format
+
+Constraints define conditions that **must not occur** in valid counterfactuals.
+
+**Format:** `¬{ condition1 ∧ condition2 ∧ ... }`
+
+**Syntax:**
+- `t0.` refers to the counterfactual instance being generated
+- `t1.` refers to existing database tuples (for relational constraints)
+- Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Logical: `∧` (AND)
+
+**Example (ny_DCs.txt):**
+```text
+¬{ t0.type == "Condo_for_sale" ∧ t0.bath >= 7 }
+¬{ t0.type == t1.type ∧ t0.beds > t1.beds ∧ t0.propertysqft < t1.propertysqft }
+¬{ t0.beds < t0.bath }
+```
+
+**Interpretation:**
+1. A condo cannot have 7+ bathrooms
+2. Properties of same type: more beds should mean more square footage
+3. Beds cannot be less than bathrooms
+
+## GUI Interface Guide
 
 ### Input Parameters Tab
-![Input Parameters Tab](Input.PNG)
 
-- **Left**: Load dataset (CSV) and show dataset preview. Load constraints file, and open constraints manager. Set number of counterfactuals
-- **Right**: Configure instance attributes and select immutable features
+<img src="images/Input.PNG" width="800">
 
-### Constraints Tab
-![Constraints Tab](constraints.PNG)
+**Left Panel - Data Sources:**
+- **Dataset File**: Load CSV dataset with "Browse" button
+- **Preview**: View random samples from dataset
+- **Constraints File**: Load denial constraints text file
+- **Preview**: View and edit constraints in Constraints Manager
+- **Number of Counterfactuals**: Slider to set desired count (1-10)
 
-Displays active denial constraints that ensure counterfactual feasibility.
+**Right Panel - Configuration:**
+- **Input Tuple**: Set initial instance attribute values
+- **Immutable Attributes**: Check boxes for features that cannot change
 
-### Results Tab
-![Results Tab](Results.PNG)
+### Constraints Manager
 
-Shows generated counterfactuals with:
-- Changed attributes highlighted with arrows (→) and changed font color.
-- Diversity score (DPP) measuring solution variety
-- Distance scores showing proximity to original instance
+<img src="images/constraints.PNG" width="800">
 
-Top right choose between DiCE and CoDeC for comparison.
-## Quick Start
+**Features:**
+- **Current Constraints**: View all active constraints
+- **Add New Constraint**: Build constraints using interactive components
+- **Remove**: Delete individual constraints with 🗑️ button
+- **Save**: Apply changes back to constraint file
 
-1. Load a binary classification dataset (CSV with 'label' column)
-2. Load denial constraints file
-3. Configure the instance to explain
-4. Mark any immutable attributes
-5. Click "Generate Counterfactuals"
+**Building Constraints:**
+1. Select left attribute (t0.feature or t1.feature)
+2. Choose operator (==, !=, <, <=, >, >=)
+3. Toggle between attribute comparison or fixed value
+4. Add multiple components with "Add Component"
+5. Click "Add Constraint" to finalize
+
+### Results Comparison Tab
+
+<img src="images/Results.PNG" width="800">
+
+**Header:**
+- **Toggle Buttons**: Switch between CODEC and DiCE results
+- **Compare Button**: Side-by-side comparison view
+
+**Metrics:**
+- **Diversity Score**: DPP-based measure of solution variety (higher is better)
+- **Avg. Distance**: Mean proximity to original instance (lower is better)
+
+**Results Table:**
+- **Initial Row**: Original instance values
+- **Counterfactual Rows**: Generated alternatives
+- **Change Indicators**: → symbol and color highlighting for modified attributes
+- **Distance Column**: Individual proximity score per counterfactual
 
 ## Model Handling
 
-- **Pre-trained models**: If a matching model exists for your dataset, it loads automatically
-- **Automatic training**: For new datasets without pre-trained models, the system will train and save a model automatically
+CODEC automatically manages model training and caching:
 
-## Denial Constraints Format
+### Pre-trained Models
 
-Constraints should be specified in a text file using the following format:
+If a model exists in `models/` matching your dataset name:
+- Automatically loaded on generation
+- No training delay
+- Consistent results across sessions
 
+### Automatic Training
+
+For new datasets without pre-trained models:
+- Neural network trained automatically (100 epochs)
+- Model saved to `models/{dataset_name}_model_state_dict.dict`
+- Reused in future sessions
+- Training time: ~1-2 minutes for typical datasets
+
+### Model Architecture
+
+- Multi-layer perceptron (MLP)
+- Hidden layer: 100 neurons
+- Output: Binary classification (sigmoid)
+- Optimizer: Adam (lr=1e-4)
+- Loss: Binary cross-entropy
+
+## Advanced Usage
+
+### Adjusting Hyperparameters
+
+Key parameters can be modified at the top of `gui.py`:
+
+#### Counterfactual Generation Parameters
+```python
+# Learning rates for gradient-based optimization
+LR_ADULT = 0.03      # Learning rate for Adult dataset
+LR_NY = 0.001        # Learning rate for NY Housing dataset
+
+# Iteration bounds for counterfactual search
+MIN_ITER_ADULT = 250 # Minimum gradient steps for Adult dataset
+MAX_ITER_ADULT = 500 # Maximum gradient steps for Adult dataset
+MIN_ITER_NY = 500    # Minimum gradient steps for NY Housing dataset
+MAX_ITER_NY = 1500   # Maximum gradient steps for NY Housing dataset
 ```
-¬{ t0.type == t1.type ∧ t0.beds > t1.beds ∧ t0.bath > t1.bath ∧ t0.propertysqft < t1.propertysqft }
-¬{ t0.type == "Condo_for_sale" ∧ t0.bath >= 7 }
+
+**Tips:**
+- Higher learning rates converge faster but may be less stable
+- More iterations allow finding better counterfactuals but increase runtime
+- Dataset-specific tuning recommended for optimal results
+
+#### Model Training Parameters
+```python
+# Neural network training epochs
+EPOCHS = 10          # Default epochs for most datasets
+NY_EPOCHS = 100      # Epochs for NY Housing dataset (smaller dataset needs more training)
 ```
 
-Each constraint defines conditions that counterfactuals must not violate.
+**Notes:**
+- Larger datasets typically need fewer epochs
+- Smaller datasets may require more epochs to avoid underfitting
+- Training time scales linearly with epoch count
 
-## Requirements
+#### GUI Appearance
+```python
+# Font scaling for GUI text size
+FONT_SCALE = 1.4     # Increase for larger text (e.g., 1.6), decrease for smaller (e.g., 1.0)
+```
 
-- Binary classification dataset with 'label' column (0/1)
-- Denial constraints text file
-- Python environment with dependencies from environment.yml
+**Examples:**
+- `FONT_SCALE = 1.0` - Default size (smallest)
+- `FONT_SCALE = 1.4` - Current setting (40% larger)
+- `FONT_SCALE = 1.8` - Extra large for high-DPI displays
 
-## Demonstration Video
-- Our 3 minutes demonstration video shown on CoDeC_Video.mp4 
+#### Debug Mode
+```python
+# Verbose output for debugging
+VERBOSE = True       # Set to False to suppress detailed console output
+```
+
+### Solver Configuration
+
+Additional parameters can be modified in the `ProjectionConfig` class:
+```python
+# In ProjectionConfig class initialization (around line 260)
+solver_timeout=10000  # Milliseconds (default: 10 seconds)
+delta=0.0            # Diversity weight (0.0 = no diversity penalty)
+```
+
+**Solver Timeout:**
+- Increase for complex constraint spaces (e.g., 50000 for 50 seconds)
+- Decrease for faster but potentially incomplete results
+- Too low may cause solver failures
+
+**Delta (Diversity Weight):**
+- `0.0` - No diversity enforcement (fastest)
+- `50.0` - Moderate diversity (balanced)
+- `100.0+` - High diversity (slower, more varied results)
+
+### Custom Dataset Configuration
+
+When adding a new dataset, consider:
+
+1. **Add learning rate tuning:**
+```python
+LR_MYDATASET = 0.01  # Experiment with values between 0.001 and 0.1
+```
+
+2. **Set iteration bounds:**
+```python
+MIN_ITER_MYDATASET = 100
+MAX_ITER_MYDATASET = 500
+```
+
+3. **Update the dataset detection logic:**
+```python
+# In code_counterfactuals function (around line 850)
+if "mydataset" in dataset_path.lower():
+    min_iter = MIN_ITER_MYDATASET
+    max_iter = MAX_ITER_MYDATASET
+    lr = LR_MYDATASET
+```
+
+### Performance Optimization
+
+**For faster generation:**
+```python
+MIN_ITER_ADULT = 50    # Reduce minimum iterations
+MAX_ITER_ADULT = 200   # Reduce maximum iterations
+LR_ADULT = 0.05        # Increase learning rate (but may reduce quality)
+```
+
+**For higher quality:**
+```python
+MIN_ITER_ADULT = 500   # Increase minimum iterations
+MAX_ITER_ADULT = 1000  # Increase maximum iterations
+LR_ADULT = 0.01        # Decrease learning rate for finer search
+```
+
+**Trade-off:** Quality vs. Speed
+- Lower iterations + higher LR = Faster, potentially lower quality
+- Higher iterations + lower LR = Slower, potentially higher quality
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: "No constraints to project"
+- **Cause**: Initial instance already satisfies all constraints
+- **Solution**: Try a different initial instance or add more constraints
+
+**Issue**: Solver timeout errors
+- **Cause**: Constraint space too complex
+- **Solution**: Increase `solver_timeout` parameter or simplify constraints
+
+**Issue**: No counterfactuals generated
+- **Cause**: Constraints too restrictive or no feasible solutions exist
+- **Solution**: Review constraints for conflicts, check if target class is achievable
+
+**Issue**: Model file not found
+- **Cause**: Model cache cleared or moved
+- **Solution**: System will automatically retrain (1-2 minutes)
+
+### Performance Tips
+
+- **Large datasets (>10K rows)**: Consider reducing training epochs
+- **Many constraints (>20)**: Increase solver timeout
+- **Slow generation**: Reduce number of requested counterfactuals
+
+## Demonstration
+
+Watch our **5-minute demonstration video** located in `video/CoDeC_Video.mp4` showing:
+- Loading datasets and constraints
+- Configuring initial instances
+- Generating and comparing results
+- Using the Constraints Manager
+
+## Example Datasets
+
+### NY Housing (nyhouse.csv)
+
+**Domain**: Real estate listings
+**Features**: Property type, beds, baths, square footage, location
+**Constraints**: Domain knowledge about property attributes
+**Use Case**: Explain why properties are predicted as high/low value
+
+### Adult Income (adult.csv)
+
+**Domain**: Census income prediction
+**Features**: Age, education, occupation, hours worked, demographics
+**Constraints**: Logical relationships (e.g., education level must match years)
+**Use Case**: Explain income classification decisions
+
+## Comparison: CODEC vs DiCE
+
+| Aspect | DiCE | CODEC |
+|--------|------|-------|
+| **Constraint Satisfaction** | No guarantee | Guaranteed via SMT solver |
+| **Diversity** | Gradient-based | DPP-optimized with constraints |
+| **Feasibility** | May be infeasible | Always feasible |
+| **Speed** | Faster | Slower (constraint solving) |
+| **Best For** | Quick exploration | Production systems requiring validity |
+
+## Citation
+
+If you use CODEC in your research, please cite:
+```bibtex
+@software{codec2024,
+  title={CODEC: Constraints-Guided Diverse Counterfactuals},
+  author={Your Name},
+  year={2024},
+  url={https://github.com/yourusername/codec}
+}
+```
+
+## License
+
+[Your License Here - e.g., MIT, Apache 2.0]
+
+## Contact
+
+For questions, issues, or collaboration:
+- **Email**: asaelavia@gmail.com
+- **GitHub Issues**: [Open an issue](https://github.com/yourusername/codec/issues)
+
+## Acknowledgments
+
+CODEC builds upon:
+- **DiCE**: Diverse Counterfactual Explanations ([Mothilal et al., 2020](https://arxiv.org/abs/1905.07697))
+- **Z3 Solver**: Microsoft Research SMT solver
+- **CustomTkinter**: Modern GUI framework
+
+---
+
+**Note**: This is research software. While we strive for correctness, please validate results for your specific use case before deployment in production systems.

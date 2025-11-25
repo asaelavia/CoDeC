@@ -18,11 +18,26 @@ import itertools
 from contextlib import contextmanager
 from z3 import *
 
+VERBOSE = True
+LR_NY = 0.001  # GOOD NY
+LR_ADULT = 0.03  # GOOD Adult
+
+MIN_ITER_ADULT = 250
+MIN_ITER_NY = 500
+MAX_ITER_ADULT = 500
+MAX_ITER_NY = 1500
+
+EPOCHS = 10
+NY_EPOCHS = 100
+
 # ============= FONT SCALING CONFIGURATION =============
 FONT_SCALE = 1.4  # Adjust this to scale all fonts (e.g., 1.2 for 20% larger, 0.8 for 20% smaller)
+
+
 def scaled_size(size):
     """Return a scaled dimension (for widths, heights, etc.)"""
     return int(size * FONT_SCALE)
+
 
 def scaled_font(size, weight="normal"):
     """Return a scaled font tuple"""
@@ -31,22 +46,19 @@ def scaled_font(size, weight="normal"):
         return "SF Pro Display", scaled_size
     else:
         return "SF Pro Display", scaled_size, weight
-# ======================================================
-VERBOSE = True
-LR_NY = 0.001 # GOOD NY
-LR_ADULT = 0.03 # GOOD Adult
-# MIN_ITER_ADULT = 5
-MIN_ITER_ADULT = 250
-MIN_ITER_NY = 500
 
-MAX_ITER_ADULT = 500
-# MAX_ITER_ADULT = 15
-MAX_ITER_NY = 1500
+
+# ======================================================
+
+
 _solver_cache = {}
+
 
 def reset_solver_cache():
     """Reset the solver cache to empty."""
     _solver_cache.clear()
+
+
 seed = 1
 random.seed(seed)
 np.random.seed(seed)
@@ -58,6 +70,8 @@ torch.backends.cudnn.benchmark = False
 os.environ['PYTHONHASHSEED'] = str(seed)
 diversity_seed = seed
 set_param("random_seed", seed)
+
+
 def extract_names_and_conditions(line):
     constraints = []
     pattern = r'([\w.-]+)\s*([<>=!]=?)\s*([\w."]+)'
@@ -356,6 +370,7 @@ class ProjectionConfig:
         self.found_points = found_points
         self.gamma = gamma  # ADD gamma attribute
 
+
 def dpp_style(cfs, dice_inst):
     num_cfs = len(cfs)
     """Computes the DPP of a matrix."""
@@ -395,7 +410,7 @@ def n_best_cfs_heuristic(cfs_pool, origin_instance, k, transformer, exp_random):
     comb = ()
     dist_dic = {}
     best_indices = []
-    for _ in range(min(len(cfs_pool),k)):
+    for _ in range(min(len(cfs_pool), k)):
         dic = {}
         for i, cf in cfs_pool.iterrows():
             dpp_score, proximity_distance = n_cfs_score(
@@ -411,7 +426,10 @@ def n_best_cfs_heuristic(cfs_pool, origin_instance, k, transformer, exp_random):
         best_indices.append(best_index)
     return curr_best, dic[best_index][0], [dist_dic[i] for i in best_indices]
 
+
 timeout_occurred = False
+
+
 def timeout_handler():
     global timeout_occurred
     timeout_occurred = True
@@ -528,6 +546,7 @@ def project_solver(row, projection_config):
                 return result  # Can be either single value or tuple (orig, coded)
 
     return None
+
 
 # def _try_projection_with_z3(comb, row, orig_row, dataset, orig_dataset,
 #                             projection_config, must_cons, category_mappings):
@@ -946,6 +965,7 @@ def _try_projection_with_z3(comb, row, orig_row, dataset, orig_dataset,
         s.pop()
         return None
 
+
 # def project_instances(cf_example, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function, cons_feat,
 #                       unary_cons_lst_single, bin_cons, norm_params, normalized_medians):
 #     """Project instances using Z3 solver"""
@@ -1025,7 +1045,6 @@ def project_instances(cf_example, df, cont_feat, d, fixed_feat, dic_cols, constr
     projected_cfs_df = project_cfs_df.copy()
     projected_cfs_df = projected_cfs_df[1:0]
 
-
     for index, row in project_cfs_df.iterrows():
         print(f'Projecting instance {index} with Z3 solver')
 
@@ -1089,6 +1108,7 @@ def project_instances(cf_example, df, cont_feat, d, fixed_feat, dic_cols, constr
 
     return projected_cfs_df
 
+
 # def project_counterfactuals(dice_exp, df, cont_feat, d, fixed_feat, dic_cols, constraints, cons_function, cons_feat,
 #                             unary_cons_lst_single, bin_cons, norm_params, normalized_medians):
 #     all_instances_cfs = []
@@ -1130,6 +1150,7 @@ def timed_section(name, queue=None):
     print(msg)
     if queue:
         queue.put({'type': 'progress', 'text': msg})
+
 
 # def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_feat, d, dic_cols, constraints,
 #                         cons_function, cons_feat, unary_cons_lst_single, bin_cons, transformer,
@@ -1207,7 +1228,8 @@ def timed_section(name, queue=None):
 
 def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_feat, d, dic_cols, constraints,
                         cons_function, cons_feat, unary_cons_lst_single, bin_cons, transformer,
-                        norm_params, normalized_medians, progress_queue=None,min_iter=5, max_iter=50,lr = 0.01, delta=50.0):
+                        norm_params, normalized_medians, progress_queue=None, min_iter=5, max_iter=50, lr=0.01,
+                        delta=50.0):
     """Generate counterfactuals with diversity from accepted samples only"""
 
     # Track ALL accepted samples across entire BFS run
@@ -1287,7 +1309,7 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
                 print(f'dice_exp_random:\n {cf_examples_list.final_cfs_df_sparse}')
 
             # **Pass model for immediate acceptance checking**
-            projected_cfs_not_accepted= project_counterfactuals(
+            projected_cfs_not_accepted = project_counterfactuals(
                 dice_exp_random, df, cont_feat, d, fixed_feat,
                 dic_cols, constraints, cons_function, cons_feat,
                 unary_cons_lst_single, bin_cons,
@@ -1330,8 +1352,10 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
         return accepted_final_cfs if accepted_final_cfs is not None else pd.DataFrame()
     return None
 
+
 def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_feat, k,
-                         model_cache, transformer_cache, constraints_cache, progress_queue=None,min_iter = 5, max_iter = 50,lr=0.01, delta = 0.0):
+                         model_cache, transformer_cache, constraints_cache, progress_queue=None, min_iter=5,
+                         max_iter=50, lr=0.01, delta=0.0):
     """Modified to use caches and progress queue and return both DiCE and CoDeC results"""
 
     def send_progress(message):
@@ -1397,7 +1421,8 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
             train_loader = DataLoader(
                 TensorDataset(torch.from_numpy(X_train_fixed), torch.Tensor(y_train.values.astype('int'))),
                 64, shuffle=True)
-            model = pretrain(model, 'cpu', train_loader, lr=1e-4, epochs=100)
+            model = pretrain(model, 'cpu', train_loader, lr=1e-4,
+                             epochs=NY_EPOCHS if 'nyhouse' in dataset_filename else EPOCHS)
             torch.save(model.state_dict(), model_state_dict_path)
             print('Model trained and saved to disk')
 
@@ -1432,7 +1457,8 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
 
     # STORE DICE RESULTS
     dice_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
-    dice_cfs_processed, dice_dpp_score, dice_distances = n_best_cfs_heuristic(dice_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    dice_cfs_processed, dice_dpp_score, dice_distances = n_best_cfs_heuristic(dice_cfs, query_instances.iloc[0], k,
+                                                                              transformer, exp_random)
 
     # with open('dice_gui_metrics.pkl', 'wb') as f:
     #     pickle.dump((dice_cfs_processed, dice_dpp_score, dice_distances), f)
@@ -1448,11 +1474,13 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
     codec_cfs = bfs_counterfactuals(
         dice_exp_random, k, model, fixed_feat, exp_random, df, cont_feat, d,
         dic_cols, constraints, cons_function, cons_feat, unary_cons_lst_single, bin_cons,
-        transformer, norm_params, normalized_medians, progress_queue,min_iter = min_iter, max_iter=max_iter,lr = lr, delta=delta
+        transformer, norm_params, normalized_medians, progress_queue, min_iter=min_iter, max_iter=max_iter, lr=lr,
+        delta=delta
     )
     reset_solver_cache()
     print(codec_cfs)
-    codec_cfs_processed, codec_dpp_score, codec_distances = n_best_cfs_heuristic(codec_cfs, query_instances.iloc[0], k, transformer, exp_random)
+    codec_cfs_processed, codec_dpp_score, codec_distances = n_best_cfs_heuristic(codec_cfs, query_instances.iloc[0], k,
+                                                                                 transformer, exp_random)
     # codec_cfs_processed, codec_dpp_score, codec_distances = dice_cfs_processed,dice_dpp_score,dice_distances
     # with open('codec_gui_metrics.pkl', 'wb') as f:
     #     pickle.dump((codec_cfs_processed, codec_dpp_score, codec_distances), f)
@@ -1469,6 +1497,7 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
             'dataset': d.data_df  # The training dataset for constraint checking
         }
     }
+
 
 # Set CustomTkinter appearance
 
