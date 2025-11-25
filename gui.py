@@ -1366,7 +1366,8 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
     x_train = train_dataset.drop('label', axis=1)
 
     cache_key = dataset_path
-    model_state_dict_path = f'{dataset_path}_model_state_dict.dict'
+    dataset_filename = dataset_path.split('/')[-1].split('\\')[-1].split('.')[0]
+    model_state_dict_path = f'models/{dataset_filename}_model_state_dict.dict'
 
     # Check if model is already in cache
     if cache_key in model_cache:
@@ -2262,8 +2263,11 @@ class ModernCounterfactualGUI:
 
     def browse_dataset(self):
         """Browse for dataset file"""
+        initial_dir = os.path.join(os.getcwd(), 'data')
+
         filename = filedialog.askopenfilename(
             title="Select Dataset CSV",
+            initialdir=initial_dir,
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*"))
         )
         if filename:
@@ -2281,8 +2285,11 @@ class ModernCounterfactualGUI:
 
     def browse_constraints(self):
         """Browse for constraints file"""
+        initial_dir = os.path.join(os.getcwd(), 'constraints')
+
         filename = filedialog.askopenfilename(
             title="Select Constraints File",
+            initialdir=initial_dir,
             filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
         )
         if filename:
