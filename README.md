@@ -35,8 +35,8 @@ CODEC uses a **Perturb-and-Project** methodology:
 - **Highlighted Changes**: Visual indicators show which attributes changed and by how much
 
 ### Evaluation Metrics
-- **Proximity**: MAD-normalized distance, L0 (sparsity), L1 distance
-- **Diversity**: DPP score, pairwise distances
+- **Proximity**: MAD-normalized distance
+- **Diversity**: DPP score
 - **Validity**: Automatic constraint violation checking
 
 ## Installation
@@ -215,7 +215,7 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 
 **Header:**
 - **Toggle Buttons**: Switch between CODEC and DiCE results
-- **Compare Button**: Side-by-side comparison view
+- **Compare Button**: Above and under comparison view
 
 **Metrics:**
 - **Diversity Score**: DPP-based measure of solution variety (higher is better)
@@ -419,7 +419,7 @@ If you use CODEC in your research, please cite:
 
 For questions, issues, or collaboration:
 - **Email**: asaelavia@gmail.com
-- **GitHub Issues**: [Open an issue](https://github.com/yourusername/codec/issues)
+- **GitHub Issues**: [Open an issue](https://github.com/asaelavia/codec/issues)
 
 ## Acknowledgments
 
