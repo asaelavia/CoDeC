@@ -399,6 +399,7 @@ EPOCHS = 50            # More training epochs
 - **Slow DiCE generation**: Reduce `MAX_ITER` or decrease `MIN_ITER`
 - **Poor quality counterfactuals**: Increase `MIN_ITER` and `MAX_ITER`
 
+<!---
 ## Citation
 
 If you use CODEC in your research, please cite:
@@ -414,7 +415,7 @@ If you use CODEC in your research, please cite:
 ## License
 
 [Your License Here - e.g., MIT, Apache 2.0]
-
+--->
 ## Contact
 
 For questions, issues, or collaboration:
