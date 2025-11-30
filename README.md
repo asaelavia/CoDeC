@@ -326,7 +326,7 @@ MAX_ITER = 500
 
 3. **Set training epochs:**
 ```python
-EPOCHS = 50  # Adjust based on dataset size
+EPOCHS = 10  # Adjust based on dataset size
 ```
 
 **Note:** The system automatically detects "nyhouse" in the dataset filename and uses the `_NY` variants. For all other datasets, it uses the default parameters.
