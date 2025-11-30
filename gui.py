@@ -39,6 +39,9 @@ MAX_ITER_NY = 1500
 EPOCHS = 10
 NY_EPOCHS = 100
 
+W1 = 1 # Diversity weight parameter
+W2 = 0.5 # Distance weight parameter
+
 # ============= FONT SCALING CONFIGURATION =============
 FONT_SCALE = 1.2  # Adjust this to scale all fonts (e.g., 1.2 for 20% larger, 0.8 for 20% smaller)
 
@@ -427,7 +430,7 @@ def n_best_cfs_heuristic(cfs_pool, origin_instance, k, transformer, exp_random):
                 exp_random)
             if len(curr_best) == 0:
                 dist_dic[i] = proximity_distance
-            dic[i] = (dpp_score, proximity_distance, dpp_score - 0.5 * proximity_distance)
+            dic[i] = (dpp_score, proximity_distance, W1 * dpp_score - W2 * proximity_distance)
         best_index = max(dic, key=lambda x: dic[x][-1])
         best_cf = cfs_pool.loc[best_index]
         cfs_pool = cfs_pool.drop(best_index, axis=0)

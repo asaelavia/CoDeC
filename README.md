@@ -80,18 +80,18 @@ Key dependencies (see `requirements.txt` for complete list):
 ├── requirements.txt         # Python dependencies
 ├── data/                    # Dataset directory
 │   ├── nyhouse.csv         # Example housing dataset
-│   └── adult.csv           # Example income dataset
+│   ├── adult.csv           # Example adult dataset
+│   └── adult_small.csv     # Example adult_small dataset
 ├── constraints/             # Constraints directory
 │   ├── ny_DCs.txt          # Example housing constraints
-│   └── adult_dcs.txt       # Example income constraints
+│   ├── adult_DCs.txt       # Example adult constraints
+│   └── adult_small_DCs.txt # Example adult_small constraints
 ├── models/                  # Trained model storage
-│   └── *.dict              # Model state dictionaries
+│   └── *.dict              # MLP Model state dictionaries
 ├── video/                   # Demonstration materials
-│   └── CoDeC_Video.mp4     # 3-minute demonstration video
-├── images/                  # GUI screenshots
-│   ├── Input.PNG           # GUI input tab screenshot
-│   ├── constraints.PNG     # Constraints manager screenshot
-│   └── Results.PNG         # Results comparison screenshot
+│   └── CoDeC_Video.mp4     # 5-minute demonstration video
+├── images/                  # GUI screenshots folder
+│   └── *.dict              # GUI screenshots images
 └── README.md
 ```
 
@@ -160,10 +160,11 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 - Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Logical: `∧` (AND)
 
-**Example (adult_DCs.txt):**
+**Example (ny_DCs.txt):**
 ```text
-¬{ t0.education == t1.education ∧ t0.education_num != t1.education_num }
-¬{ t0.occupation == "Exec_managerial" ∧ t0.hours_per_week <= 35 }
+¬{ t0.type == t1.type ∧ t0.beds > t1.beds ∧ t0.bath > t1.bath ∧ t0.propertysqft < t1.propertysqft }
+¬{ t0.sublocality == "Manhattan" ∧ t0.beds > 4 }
+¬{ t0.sublocality == "Manhattan" ∧ t0.bath > 4 }
 ```
 
 **Interpretation:**
@@ -392,7 +393,7 @@ EPOCHS = 50            # More training epochs
 ### Performance Tips
 
 - **Large datasets (>10K rows)**: Reduce `EPOCHS` to 5-10
-- **Many constraints (>20)**: Consider simplifying constraint set
+- **Many constraints (>50)**: Consider simplifying constraint set
 - **Slow DiCE generation**: Reduce `MAX_ITER` or decrease `MIN_ITER`
 - **Poor quality counterfactuals**: Increase `MIN_ITER` and `MAX_ITER`
 
