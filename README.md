@@ -160,17 +160,15 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 - Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Logical: `∧` (AND)
 
-**Example (ny_DCs.txt):**
+**Example (adult_DCs.txt):**
 ```text
-¬{ t0.type == "Condo_for_sale" ∧ t0.bath >= 7 }
-¬{ t0.type == t1.type ∧ t0.beds > t1.beds ∧ t0.propertysqft < t1.propertysqft }
-¬{ t0.beds < t0.bath }
+¬{ t0.education == t1.education ∧ t0.education_num != t1.education_num }
+¬{ t0.occupation == "Exec_managerial" ∧ t0.hours_per_week <= 35 }
 ```
 
 **Interpretation:**
-1. A condo cannot have 7+ bathrooms
-2. Properties of same type: more beds should mean more square footage
-3. Beds cannot be less than bathrooms
+1. Education level must be consistent with education number (same education implies same education_num)
+2. Executive/managerial roles require more than 35 hours per week
 
 ## GUI Interface Guide
 
@@ -212,7 +210,9 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 
 **Header:**
 - **Toggle Buttons**: Switch between CODEC and DiCE results
-- **Compare Button**: Above and under comparison view
+- **Compare Button**: Side-by-side comparison view (top right)
+
+<img src="images/compare_screen.PNG" width="800">
 
 **Metrics:**
 - **Diversity Score**: DPP-based measure of solution variety (higher is better)
