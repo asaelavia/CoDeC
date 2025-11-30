@@ -2629,8 +2629,10 @@ class ModernCounterfactualGUI:
                     variable=var,
                     fg_color=self.colors['accent'],
                     hover_color=self.colors['accent_hover'],
-                    border_color=self.colors['border'],
-                    checkmark_color=self.colors['bg_primary']
+                    border_color=self.colors['text_secondary'],  # Changed to visible color
+                    border_width=2,  # Added explicit border width
+                    checkmark_color=self.colors['bg_primary'],
+                    corner_radius=4  # Slightly rounded corners for better visibility
                 )
                 checkbox.grid(row=row, column=col, sticky='w', padx=20, pady=5)
 
@@ -3488,7 +3490,7 @@ class ModernCounterfactualGUI:
         # Create title
         title_label = ctk.CTkLabel(
             self.results_table_frame,
-            text="Counterfactual Results Comparison",
+            text="Counterfactuals",
             font=scaled_font(34, "bold"),
             text_color=self.colors['text_primary']
         )
