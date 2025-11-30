@@ -213,7 +213,7 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 - **Toggle Buttons**: Switch between CODEC and DiCE results
 - **Compare Button**: Side-by-side comparison view (top right)
 
-<img src="images/compare_screen.PNG" width="800">
+<img src="images/compare_screen.png" width="800">
 
 **Metrics:**
 - **Diversity Score**: DPP-based measure of solution variety (higher is better)
