@@ -41,51 +41,43 @@ CODEC uses a **Perturb-and-Project** methodology:
 
 ## Installation
 
+> **Note:** The GUI has been tested on Windows. Use **Anaconda Prompt** for all environment creation and installation steps.
+
 ### Using Conda (Recommended)
 ```bash
-# 1. Create conda environment from file
-conda env create -f environment.yml
+# 1. Create conda environment with Python 3.13.2
+conda create -n CoDeC python=3.13.2
 
 # 2. Activate environment
-conda activate my_env_name
-
-# 3. Verify installation
-python gui.py
-```
-
-### Manual Installation
-
-If you prefer to install dependencies manually:
-```bash
-# 1. Create environment with Python 3.8+
-conda create -n codec python=3.8
-
-# 2. Activate environment
-conda activate codec
+conda activate CoDeC
 
 # 3. Install dependencies
-pip install customtkinter dice-ml scikit-learn pandas numpy torch z3-solver
+pip install -r requirements.txt
+
+# 4. Verify installation (run from the repository root folder)
+python gui.py
 ```
 
 ### Requirements
 
-Key dependencies:
-- Python 3.8+
-- customtkinter (GUI framework)
-- dice-ml (base counterfactual generation)
-- scikit-learn (ML utilities)
-- torch (neural networks)
-- z3-solver (constraint solving)
-- pandas, numpy (data manipulation)
-
-See `environment.yml` for complete dependency list.
+Key dependencies (see `requirements.txt` for complete list):
+- Python 3.13.2
+- customtkinter==5.2.2
+- jsonschema==4.25.1
+- numpy==2.3.4
+- pandas==2.3.3
+- raiutils==0.4.1
+- torch==2.9.0
+- tqdm==4.67.1
+- z3==0.2.0
+- z3_solver==4.13.0.0
 
 ## Repository Structure
 ```
 .
 ├── gui.py                   # Main GUI application
 ├── class_models.py          # Neural network model definitions
-├── environment.yml          # Conda environment specification
+├── requirements.txt         # Python dependencies
 ├── data/                    # Dataset directory
 │   ├── nyhouse.csv         # Example housing dataset
 │   └── adult.csv           # Example income dataset
@@ -106,7 +98,12 @@ See `environment.yml` for complete dependency list.
 ## Quick Start
 
 ### 1. Launch the GUI
+
+> **Important:** Run `gui.py` from the repository root folder so that the browse paths and model paths work correctly.
+
 ```bash
+# Make sure you're in the repository root directory
+cd path/to/codec
 python gui.py
 ```
 
@@ -124,7 +121,7 @@ Use the included NY Housing example:
 
 - **CODEC Tab**: View constraint-satisfying counterfactuals
 - **DiCE Tab**: Compare with unconstrained counterfactuals
-- **Compare Button**: Side-by-side comparison view
+- **Compare Button**: Above and under comparison view
 - **Metrics**: Diversity score (DPP) and average distance shown at top
 
 ## Dataset Format

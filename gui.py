@@ -1,3 +1,4 @@
+import math
 import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -8,7 +9,10 @@ import pandas as pd
 import numpy as np
 import time
 import random
+import itertools
 from sklearn.model_selection import train_test_split
+from z3.z3 import *
+
 import dice_ml
 from class_models import Mlp, pretrain
 from dice_ml.utils.helpers import DataTransfomer
@@ -16,8 +20,13 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import itertools
 from contextlib import contextmanager
+import os
 from z3 import *
 
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
 VERBOSE = True
 LR_NY = 0.001  # GOOD NY
 LR = 0.03  # GOOD Adult
@@ -31,7 +40,7 @@ EPOCHS = 10
 NY_EPOCHS = 100
 
 # ============= FONT SCALING CONFIGURATION =============
-FONT_SCALE = 1.4  # Adjust this to scale all fonts (e.g., 1.2 for 20% larger, 0.8 for 20% smaller)
+FONT_SCALE = 1.2  # Adjust this to scale all fonts (e.g., 1.2 for 20% larger, 0.8 for 20% smaller)
 
 
 def scaled_size(size):
@@ -418,7 +427,7 @@ def n_best_cfs_heuristic(cfs_pool, origin_instance, k, transformer, exp_random):
                 exp_random)
             if len(curr_best) == 0:
                 dist_dic[i] = proximity_distance
-            dic[i] = (dpp_score, proximity_distance, dpp_score - 0.1 * proximity_distance)
+            dic[i] = (dpp_score, proximity_distance, dpp_score - 0.5 * proximity_distance)
         best_index = max(dic, key=lambda x: dic[x][-1])
         best_cf = cfs_pool.loc[best_index]
         cfs_pool = cfs_pool.drop(best_index, axis=0)
@@ -1255,7 +1264,8 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
 
     for i, cfs in enumerate(projected_cfs):
         cfs = cfs.drop('label', axis=1, errors='ignore')
-
+        print('########## Projected Initial CFS ##########')
+        print(cfs)
         probs = model(torch.tensor(transformer.transform(cfs).values.astype('float32')).float()).detach().numpy()
         labels = np.round(probs)
 
@@ -1305,8 +1315,10 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
                 )
             except:
                 break
-            for cf_examples_list in dice_exp_random.cf_examples_list:
-                print(f'dice_exp_random:\n {cf_examples_list.final_cfs_df_sparse}')
+            for i,cf_examples_list in enumerate(dice_exp_random.cf_examples_list):
+                print('##########Instance to Perturb#########')
+                print(not_accepted.iloc[i])
+                print(f'Perturb results:\n {cf_examples_list.final_cfs_df_sparse}')
 
             # **Pass model for immediate acceptance checking**
             projected_cfs_not_accepted = project_counterfactuals(
@@ -1319,7 +1331,7 @@ def bfs_counterfactuals(exp, threshold, model, fixed_feat, exp_random, df, cont_
                 transformer=transformer
             )
 
-            print(f'projected_cfs_not_accepted:\n {projected_cfs_not_accepted}')
+            print(f'Projection results:\n {projected_cfs_not_accepted}')
 
             not_accepted = None
             for cfs in projected_cfs_not_accepted:
@@ -1449,11 +1461,8 @@ def code_counterfactuals(query_instances, constraints_path, dataset_path, fixed_
         learning_rate=lr  # Increased
         # learning_rate=5e-2  # Increased
     )
-    with pd.option_context('display.max_rows', None,
-                           'display.max_columns', None,
-                           'display.width', None,
-                           'display.max_colwidth', None):
-        print(dice_exp_random.cf_examples_list[0].final_cfs_df_sparse)
+    print('####### DiCE Results #######')
+    print(dice_exp_random.cf_examples_list[0].final_cfs_df_sparse)
 
     # STORE DICE RESULTS
     dice_cfs = dice_exp_random.cf_examples_list[0].final_cfs_df_sparse.drop('label', axis=1)
@@ -1993,7 +2002,7 @@ class ModernCounterfactualGUI:
 
         instance_header = ctk.CTkLabel(
             instance_frame,
-            text="Input Tuple",
+            text="Input Instance",
             font=scaled_font(26, "bold"),
             text_color=self.colors['text_primary']
         )
@@ -2076,6 +2085,82 @@ class ModernCounterfactualGUI:
         # Add any remaining CoDeC CFs
         for j in range(len(codec_cfs)):
             if j not in used_codec_indices:
+                codec_reorder.append(codec_data['counterfactuals'][j])
+                codec_distances_reorder.append(codec_data['distances'][j])
+
+        return codec_reorder, codec_distances_reorder
+
+    def reorder_codec_by_closest_dice_l0(self, dice_data, codec_data, exp_random, transformer):
+        """Reorder CoDeC counterfactuals to optimally match DiCE counterfactuals using L0 distance (L1 as tiebreaker)"""
+        import itertools
+
+        # Get counterfactuals as DataFrames
+        dice_cfs = pd.DataFrame(dice_data['counterfactuals'])
+        codec_cfs = pd.DataFrame(codec_data['counterfactuals'])
+
+        # Compute pairwise L0 and L1 distances
+        l0_distances = np.zeros((len(dice_cfs), len(codec_cfs)))
+        l1_distances = np.zeros((len(dice_cfs), len(codec_cfs)))
+
+        for i in range(len(dice_cfs)):
+            for j in range(len(codec_cfs)):
+                # Count number of features that differ (L0) and sum of absolute differences (L1)
+                diff_count = 0
+                abs_diff_sum = 0.0
+
+                for col in dice_cfs.columns:
+                    dice_val = dice_cfs.iloc[i][col]
+                    codec_val = codec_cfs.iloc[j][col]
+
+                    # Check if values differ
+                    if isinstance(dice_val, (int, float)) and isinstance(codec_val, (int, float)):
+                        # For numerical
+                        abs_diff = abs(dice_val - codec_val)
+                        if abs_diff > 0.001:
+                            diff_count += 1
+                        abs_diff_sum += abs_diff
+                    else:
+                        # For categorical: simple equality check
+                        if str(dice_val) != str(codec_val):
+                            diff_count += 1
+                            abs_diff_sum += 1.0  # Count as distance 1 for categorical
+
+                l0_distances[i, j] = diff_count
+                l1_distances[i, j] = abs_diff_sum
+
+        # Find optimal matching by trying all permutations
+        n = min(len(dice_cfs), len(codec_cfs))
+        codec_indices = list(range(len(codec_cfs)))
+
+        best_l0_dist = float('inf')
+        best_l1_dist = float('inf')
+        best_order = None
+
+        # Try all possible orderings of CoDeC CFs
+        for perm in itertools.permutations(codec_indices, n):
+            # Calculate total L0 and L1 distances for this ordering
+            total_l0 = sum(l0_distances[i, perm[i]] for i in range(n))
+            total_l1 = sum(l1_distances[i, perm[i]] for i in range(n))
+
+            # Compare: first by L0, then by L1 as tiebreaker
+            if total_l0 < best_l0_dist or (total_l0 == best_l0_dist and total_l1 < best_l1_dist):
+                best_l0_dist = total_l0
+                best_l1_dist = total_l1
+                best_order = perm
+
+        # Reorder CoDeC CFs according to best matching
+        codec_reorder = []
+        codec_distances_reorder = []
+
+        matched_indices = set()
+        for i, codec_idx in enumerate(best_order):
+            codec_reorder.append(codec_data['counterfactuals'][codec_idx])
+            codec_distances_reorder.append(codec_data['distances'][codec_idx])
+            matched_indices.add(codec_idx)
+
+        # Add any remaining unmatched CoDeC CFs
+        for j in range(len(codec_cfs)):
+            if j not in matched_indices:
                 codec_reorder.append(codec_data['counterfactuals'][j])
                 codec_distances_reorder.append(codec_data['distances'][j])
 
@@ -2256,7 +2341,7 @@ class ModernCounterfactualGUI:
                     transformer = self.cached_transformers[dataset_key]
 
                     # Reorder CoDeC CFs to match DiCE
-                    codec_reordered, codec_distances_reordered = self.reorder_codec_by_closest_dice(
+                    codec_reordered, codec_distances_reordered = self.reorder_codec_by_closest_dice_l0(
                         self.stored_results['dice'],
                         self.stored_results['codec'],
                         exp_random,
@@ -2377,7 +2462,7 @@ class ModernCounterfactualGUI:
                     'type': 'Condo_for_sale',
                     'beds': '0',
                     'bath': '0',
-                    'propertysqft': '600',
+                    'propertysqft': '679',
                     'locality': 'New_York',
                     'sublocality': 'Manhattan'
                 }
@@ -2395,15 +2480,15 @@ class ModernCounterfactualGUI:
                 # Set defaults for adult dataset
                 default_values = {
                     'age': '28',
-                    'workclass': 'State_gov',
-                    'education': 'Bachelors',
-                    'education_num': '13',
+                    'workclass': 'Private',
+                    'education': 'Some_college',
+                    'education_num': '10',
                     # 'marital_status': 'Divorced',
                     'marital_status': 'Married_civ_spouse',
                     'occupation': 'Machine_op_inspct',
                     # 'relationship': 'Husband',
                     'relationship': 'Wife',
-                    'race': 'Black',
+                    'race': 'Other',
                     'sex': 'Female',
                     # 'hours_per_week': '1',
                     'hours_per_week': '45',
@@ -2797,6 +2882,10 @@ class ModernCounterfactualGUI:
             with open(self.constraints_path.get(), 'w', encoding='utf-8') as f:
                 f.write('\n'.join(cleaned_constraints))
 
+            constraints_path = self.constraints_path.get()
+            if constraints_path in self.cached_constraints:
+                del self.cached_constraints[constraints_path]
+
             self.update_status("Constraints saved successfully", self.colors['success'])
             dialog.destroy()
 
@@ -2824,7 +2913,7 @@ class ModernCounterfactualGUI:
             ctk.CTkLabel(
                 header_frame,
                 text=f"Component {len(components) + 1}:",
-                font=scaled_font(14, "bold"),
+                font=scaled_font(16, "bold"),  # ✅ Increased from 14
                 text_color=self.colors['text_primary']
             ).pack(side='left')
 
@@ -2834,7 +2923,7 @@ class ModernCounterfactualGUI:
                 text="🗑️",
                 width=30,
                 height=25,
-                font=scaled_font(12),
+                font=scaled_font(14),  # ✅ Increased from 12
                 fg_color=self.colors['error'],
                 hover_color="#dc3545",
                 command=lambda: remove_component(comp_frame)
@@ -2848,8 +2937,8 @@ class ModernCounterfactualGUI:
             left_combo = ctk.CTkComboBox(
                 constraint_frame,
                 values=["t0." + col for col in columns] + ["t1." + col for col in columns],
-                font=scaled_font(12),
-                width=140
+                font=scaled_font(16),  # ✅ Increased from 12
+                width=160  # ✅ Increased from 140 to accommodate larger font
             )
             if columns:
                 left_combo.set("t0." + columns[0])
@@ -2859,8 +2948,8 @@ class ModernCounterfactualGUI:
             op_combo = ctk.CTkComboBox(
                 constraint_frame,
                 values=["==", "!=", "<=", ">=", "<", ">"],
-                font=scaled_font(12),
-                width=60
+                font=scaled_font(16),  # ✅ Increased from 12
+                width=70  # ✅ Increased from 60
             )
             op_combo.set("==")
             op_combo.pack(side='left', padx=5)
@@ -2872,15 +2961,24 @@ class ModernCounterfactualGUI:
             attr_combo = ctk.CTkComboBox(
                 constraint_frame,
                 values=["t0." + col for col in columns] + ["t1." + col for col in columns],
-                font=scaled_font(12),
-                width=140
+                font=scaled_font(16),  # ✅ Increased from 12
+                width=160  # ✅ Increased from 140
             )
             if columns:
                 attr_combo.set("t1." + columns[0])
 
             # Value inputs (entry and combobox for categorical)
-            value_entry = ctk.CTkEntry(constraint_frame, font=scaled_font(12), width=140)
-            value_combo = ctk.CTkComboBox(constraint_frame, values=[], font=scaled_font(12), width=140)
+            value_entry = ctk.CTkEntry(
+                constraint_frame,
+                font=scaled_font(16),  # ✅ Increased from 12
+                width=160  # ✅ Increased from 140
+            )
+            value_combo = ctk.CTkComboBox(
+                constraint_frame,
+                values=[],
+                font=scaled_font(16),  # ✅ Increased from 12
+                width=160  # ✅ Increased from 140
+            )
 
             # Show attribute initially
             attr_combo.pack(side='left', padx=5)
@@ -2933,9 +3031,9 @@ class ModernCounterfactualGUI:
             toggle_btn = AnimatedButton(
                 constraint_frame,
                 text="🔢 Val",
-                width=70,
-                height=25,
-                font=scaled_font(10),
+                width=80,  # ✅ Increased from 70
+                height=28,  # ✅ Increased from 25
+                font=scaled_font(12),  # ✅ Increased from 10
                 fg_color=self.colors['accent_secondary'],
                 command=toggle_type
             )
@@ -3024,7 +3122,7 @@ class ModernCounterfactualGUI:
             ctk.CTkLabel(
                 constraints_frame,
                 text="No constraints defined",
-                font=scaled_font(14),
+                font=scaled_font(16),
                 text_color=self.colors['text_dim']
             ).pack(pady=20)
             return
@@ -3052,13 +3150,14 @@ class ModernCounterfactualGUI:
             remove_btn.pack(side='right', padx=(10, 0))
 
             # Constraint text - takes remaining space
+            # ✅ Use a large wraplength that wraps only when truly necessary
             ctk.CTkLabel(
                 inner_frame,
                 text=f"{i + 1}. {constraint}",
-                font=scaled_font(13),
+                font=scaled_font(18),
                 text_color=self.colors['text_primary'],
                 anchor='w',
-                wraplength=400,  # Allow text wrapping for long constraints
+                wraplength=500,  # ✅ Large value - wraps only for very long constraints
                 justify='left'
             ).pack(side='left', fill='both', expand=True)
 
@@ -3129,13 +3228,13 @@ class ModernCounterfactualGUI:
         )
         self.loading_overlay.place(relx=0.5, rely=0.5, anchor='center', relwidth=1, relheight=1)
 
-        # Loading content
+        # Loading content - ✅ INCREASED width from 400 to 550
         loading_content = ctk.CTkFrame(
             self.loading_overlay,
             fg_color=self.colors['bg_secondary'],
             corner_radius=20,
-            width=400,
-            height=200
+            width=scaled_size(400),  # ✅ Changed from 400
+            height=scaled_size(200)
         )
         loading_content.place(relx=0.5, rely=0.5, anchor='center')
         loading_content.pack_propagate(False)
@@ -3714,9 +3813,9 @@ class ModernCounterfactualGUI:
             text_color=self.colors['text_primary']
         ).pack(pady=20)
 
-        # Metrics comparison at top
-        metrics_container = ctk.CTkFrame(dialog, fg_color="transparent", height=scaled_size(160))
-        metrics_container.pack(fill='x', padx=scaled_size(40), pady=scaled_size(25))
+        # Metrics comparison at top - ✅ REDUCED height from 160 to 100
+        metrics_container = ctk.CTkFrame(dialog, fg_color="transparent", height=scaled_size(100))
+        metrics_container.pack(fill='x', padx=scaled_size(40), pady=scaled_size(15))  # ✅ REDUCED pady from 25 to 15
         metrics_container.pack_propagate(False)
 
         # DiCE metrics (left)
@@ -3780,7 +3879,7 @@ class ModernCounterfactualGUI:
         transformer = self.cached_transformers[self.dataset_path.get()]
 
         if exp_random is not None:
-            codec_reordered, codec_distances_reordered = self.reorder_codec_by_closest_dice(
+            codec_reordered, codec_distances_reordered = self.reorder_codec_by_closest_dice_l0(
                 self.stored_results['dice'],
                 self.stored_results['codec'],
                 exp_random,

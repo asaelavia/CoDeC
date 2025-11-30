@@ -1,2 +1,0 @@
-¬{ t0.type == t1.type ∧ t0.beds <= t1.beds ∧ t0.bath > t1.bath ∧ t0.propertysqft == t1.propertysqft ∧ t0.locality != t1.locality ∧ t0.sublocality == t1.sublocality }
-¬{ t0.type == t1.type ∧ t0.beds == t1.beds ∧ t0.bath != t1.bath ∧ t0.propertysqft == t1.propertysqft ∧ t0.locality != t1.locality ∧ t0.sublocality == t1.sublocality }
