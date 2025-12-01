@@ -3449,8 +3449,15 @@ class ModernCounterfactualGUI:
                 'codec': data['codec'],
                 'dice': data['dice'],
                 'exp_random': data.get('exp_random'),
-                'constraint_data': data.get('constraint_data')  # ADD: Store constraint data
+                'constraint_data': data.get('constraint_data')
             }
+
+            # Check if fewer counterfactuals were generated than requested
+            requested_count = int(self.num_counterfactuals.get())
+            generated_count = len(data['codec']['counterfactuals'])
+
+            if generated_count < requested_count:
+                self.show_insufficient_cfs_warning(requested_count, generated_count)
 
             # Start with CoDeC results by default
             self.current_results_mode = "codec"
@@ -3461,6 +3468,103 @@ class ModernCounterfactualGUI:
 
         except Exception as e:
             self.handle_computation_error(str(e))
+
+    def show_insufficient_cfs_warning(self, requested, generated):
+        """Show warning dialog when fewer counterfactuals were generated than requested"""
+        # Define dialog size
+        dialog_width = 1200
+        dialog_height = 800
+
+        # Create dialog
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Counterfactual Generation Notice")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog_width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog_height // 2)
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+
+        dialog.configure(fg_color=self.colors['bg_primary'])
+
+        # Main content frame
+        content_frame = ctk.CTkFrame(dialog, fg_color=self.colors['bg_secondary'], corner_radius=15)
+        content_frame.pack(fill='both', expand=True, padx=20, pady=20)
+
+        # Warning icon and title
+        title_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        title_frame.pack(pady=(30, 20))
+
+        ctk.CTkLabel(
+            title_frame,
+            text="⚠️ Partial Results Generated",
+            font=scaled_font(30, "bold"),
+            text_color=self.colors['warning']
+        ).pack()
+
+        # Count information
+        count_frame = ctk.CTkFrame(content_frame, fg_color=self.colors['bg_tertiary'], corner_radius=10)
+        count_frame.pack(fill='x', padx=30, pady=10)
+
+        ctk.CTkLabel(
+            count_frame,
+            text=f"Requested: {requested}  →  Generated: {generated}",
+            font=scaled_font(26, "bold"),
+            text_color=self.colors['text_primary']
+        ).pack(pady=20)
+
+        # Explanation text
+        explanation_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        explanation_frame.pack(fill='x', padx=30, pady=10)
+
+        explanation_text = (
+            "DiCE was unable to find enough valid counterfactuals that satisfy\n"
+            "the model's decision boundary. This is a DiCE optimization issue,\n"
+            "not a constraint satisfaction problem.\n\n"
+            "To improve results, try adjusting DiCE parameters in the code:"
+        )
+
+        ctk.CTkLabel(
+            explanation_frame,
+            text=explanation_text,
+            font=scaled_font(18),
+            text_color=self.colors['text_secondary'],
+            justify='center'
+        ).pack()
+
+        # Parameter hints
+        params_frame = ctk.CTkFrame(content_frame, fg_color=self.colors['bg_tertiary'], corner_radius=10)
+        params_frame.pack(fill='x', padx=30, pady=10)
+
+        params_text = (
+            "• Increase MAX_ITER / MIN_ITER for more optimization steps\n"
+            "• Adjust LR (learning rate) for gradient descent tuning\n"
+            "• See README.md for detailed parameter documentation"
+        )
+
+        ctk.CTkLabel(
+            params_frame,
+            text=params_text,
+            font=scaled_font(18),
+            text_color=self.colors['accent'],
+            justify='left'
+        ).pack(pady=15, padx=15)
+
+        # OK button
+        ok_btn = AnimatedButton(
+            content_frame,
+            text="OK",
+            width=120,
+            height=40,
+            font=scaled_font(18, "bold"),
+            fg_color=self.colors['accent'],
+            hover_color=self.colors['accent_hover'],
+            text_color="black",
+            command=dialog.destroy
+        )
+        ok_btn.pack(pady=20)
 
     def handle_computation_error(self, error):
         """Handle computation error"""
