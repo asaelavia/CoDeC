@@ -175,7 +175,7 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 
 ### Input Parameters Tab
 
-<img src="images/Input.PNG" width="800">
+<img src="images/Input_NY.PNG" width="800">
 
 **Left Panel - Data Sources:**
 - **Dataset File**: Load CSV dataset with "Browse" button
@@ -190,7 +190,7 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 
 ### Constraints Manager
 
-<img src="images/constraints.PNG" width="800">
+<img src="images/constraints_NY.PNG" width="800">
 
 **Features:**
 - **Current Constraints**: View all active constraints
@@ -207,13 +207,13 @@ Constraints define conditions that **must not occur** in valid counterfactuals.
 
 ### Results Comparison Tab
 
-<img src="images/Results.PNG" width="800">
+<img src="images/Results_NY.PNG" width="800">
 
 **Header:**
 - **Toggle Buttons**: Switch between CODEC and DiCE results
 - **Compare Button**: Side-by-side comparison view (top right)
 
-<img src="images/compare_screen.png" width="800">
+<img src="images/compare_screen_NY.png" width="800">
 
 **Metrics:**
 - **Diversity Score**: DPP-based measure of solution variety (higher is better)
